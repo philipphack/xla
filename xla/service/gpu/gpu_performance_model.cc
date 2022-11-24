@@ -128,14 +128,14 @@ absl::Duration ProducerInputAccessTime(
 /*static*/ struct GpuPerformanceModel::RunTimes
 GpuPerformanceModel::EstimateRunTimes(
     const HloInstruction* producer, const GpuHloCostAnalysis* cost_analysis,
-    const GpuDeviceInfo& gpu_device_info,
     const std::vector<HloInstruction*> fused_users, bool multi_output) {
   VLOG(8) << "Producer: " << producer->name();
   if (producer->opcode() == HloOpcode::kFusion) {
     VLOG(10) << producer->fused_instructions_computation()->ToString();
   }
 
-  float memory_bandwidth_bytes_per_second = gpu_device_info.memory_bandwidth;
+  const GpuDeviceInfo* gpu_device_info = cost_analysis->device_info_;
+  float memory_bandwidth_bytes_per_second = gpu_device_info->memory_bandwidth;
 
   float producer_bytes_out = cost_analysis->output_bytes_accessed(*producer);
   float producer_bytes_in =
@@ -148,9 +148,10 @@ GpuPerformanceModel::EstimateRunTimes(
   VLOG(8) << "Producer elements out: " << producer_elements_out;
 
   auto compute_time = [&](int64_t n_flops, int64_t n_threads) {
-    int fpu_count = gpu_device_info.core_count * gpu_device_info.fpus_per_core;
+    int fpu_count =
+        gpu_device_info->core_count * gpu_device_info->fpus_per_core;
     float n_threads_active = fmin(n_threads, fpu_count);
-    float flop_per_second_per_fpu = 2 * 1e9 * gpu_device_info.clock_rate_ghz;
+    float flop_per_second_per_fpu = 2 * 1e9 * gpu_device_info->clock_rate_ghz;
     float flop_per_second_effective =
         flop_per_second_per_fpu * n_threads_active;
     return absl::Seconds(n_flops / flop_per_second_effective);
@@ -160,13 +161,13 @@ GpuPerformanceModel::EstimateRunTimes(
       compute_time(cost_analysis->flop_count(*producer), producer_elements_out);
   VLOG(8) << "Compute time unfused: " << compute_time_unfused;
   VLOG(8) << "Input access time unfused: "
-          << ProducerInputAccessTime(cost_analysis, gpu_device_info, producer);
+          << ProducerInputAccessTime(cost_analysis, *gpu_device_info, producer);
   absl::Duration output_write_time_unfused =
       absl::Seconds(producer_bytes_out / memory_bandwidth_bytes_per_second);
   VLOG(8) << "Output write time unfused: " << output_write_time_unfused;
   absl::Duration exec_time_unfused = std::max(
       compute_time_unfused,
-      ProducerInputAccessTime(cost_analysis, gpu_device_info, producer) +
+      ProducerInputAccessTime(cost_analysis, *gpu_device_info, producer) +
           output_write_time_unfused);
 
   int64_t fused_consumer_count = fused_users.size();
@@ -184,9 +185,9 @@ GpuPerformanceModel::EstimateRunTimes(
         producer_elements_out * utilization_by_this_consumer);
     exec_time_fused += std::max(
         compute_time_by_this_consumer,
-        ProducerInputAccessTime(cost_analysis, gpu_device_info, producer, u));
+        ProducerInputAccessTime(cost_analysis, *gpu_device_info, producer, u));
     producer_output_read_time_unfused +=
-        ReadTime(gpu_device_info,
+        ReadTime(*gpu_device_info,
                  std::min(producer_bytes_out,
                           producer_bytes_out * utilization_by_this_consumer),
                  producer_bytes_out * utilization_by_this_consumer);

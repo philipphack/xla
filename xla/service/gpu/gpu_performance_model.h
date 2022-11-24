@@ -16,11 +16,9 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_GPU_PERFORMANCE_MODEL_H_
 #define XLA_SERVICE_GPU_GPU_PERFORMANCE_MODEL_H_
 
-#include <cstdint>
 #include <vector>
 
 #include "absl/time/time.h"
-#include "xla/service/gpu/gpu_device_info.h"
 #include "xla/service/gpu/gpu_hlo_cost_analysis.h"
 
 namespace xla {
@@ -34,9 +32,7 @@ class GpuPerformanceModel {
   };
   static struct RunTimes EstimateRunTimes(
       const HloInstruction* producer, const GpuHloCostAnalysis* cost_analysis,
-      const GpuDeviceInfo& gpu_device_info,
-      const std::vector<HloInstruction*> fused_users = {},
-      bool multi_output = false);
+      std::vector<HloInstruction*> fused_users = {}, bool multi_output = false);
 };
 
 }  // namespace gpu

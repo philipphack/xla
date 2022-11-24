@@ -2784,16 +2784,24 @@ cc_library(
 cc_library(
     name = "gpu_hlo_cost_analysis",
     srcs = ["gpu_hlo_cost_analysis.cc"],
-    hdrs = ["gpu_hlo_cost_analysis.h"],
+    hdrs = [
+        "gpu_hlo_cost_analysis.h",
+        "hlo_op_profiles.h",
+    ],
     compatible_with = get_compatible_with_cloud(),
     deps = [
         ":backend_configs_cc",
         ":cublas_cudnn",
+        ":gpu_device_info",
+        ":hlo_op_profile_proto_cc",
         ":ir_emission_utils",
+        "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/service:elemental_ir_emitter",
         "//xla/service:hlo_cost_analysis",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:node_hash_map",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -2825,10 +2833,99 @@ xla_cc_test(
     srcs = ["gpu_performance_model_test.cc"],
     tags = ["nomsan"],
     deps = [
+        ":gpu_device_info",
         ":gpu_device_info_for_tests",
+        ":gpu_hlo_cost_analysis",
         ":gpu_performance_model",
+        "//xla:shape_util",
+        "//xla/hlo/ir:hlo",
+        "//xla/service:hlo_module_config",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+tf_proto_library(
+    name = "hlo_op_profile_proto",
+    srcs = ["hlo_op_profile.proto"],
+    cc_api_version = 2,
+    protodeps = [
+        "//xla/service:hlo_proto",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "hlo_op_profiler_lib",
+    testonly = True,
+    srcs = ["hlo_op_profiler.cc"],
+    hdrs = ["hlo_op_profiler.h"],
+    deps = [
+        ":gpu_device_info",
+        ":hlo_op_profile_proto_cc",
+        "//xla:literal",
+        "//xla:shape_util",
+        "//xla:status",
+        "//xla:util",
+        "//xla:xla_data_proto_cc",
+        "//xla/hlo/ir:hlo",
+        "//xla/service:executable",
+        "//xla/service:gpu_plugin",
+        "//xla/service:hlo_module_config",
+        "//xla/service:hlo_runner",
+        "//xla/service:interpreter_plugin",
+        "//xla/tests:test_utils",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+xla_cc_test(
+    name = "hlo_op_profiler_run",
+    timeout = "eternal",
+    srcs = ["hlo_op_profiler_run.cc"],
+    # This is a development tool, not a normal test, and thus should only be run
+    # manually.
+    tags = [
+        "gpu",
+        "manual",
+        "notap",
+        "requires-gpu-nvidia",
+    ],
+    deps = [
+        ":gpu_device_info",
+        ":hlo_op_profile_proto_cc",
+        ":hlo_op_profiler_lib",
+        "//xla:debug_options_flags",
+        "//xla/hlo/ir:hlo",
+        "//xla/service:hlo_runner",
+        "//xla/service:platform_util",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:path",
+        "@tsl//tsl/platform:platform_port",
+        "@tsl//tsl/platform:test",
+        "@tsl//tsl/util:command_line_flags",
+    ],
+)
+
+xla_cc_test(
+    name = "hlo_op_profiler_test",
+    srcs = ["hlo_op_profiler_test.cc"],
+    tags = [
+        "gpu",
+        "requires-gpu-nvidia",
+    ],
+    deps = [
+        ":hlo_op_profiler_lib",
+        "//xla/hlo/ir:hlo",
+        "//xla/service:gpu_plugin",
+        "//xla/service:hlo_runner",
+        "//xla/service:platform_util",
+        "//xla/tests:hlo_test_base",
+        "@tsl//tsl/platform:test_main",
     ],
 )
 
