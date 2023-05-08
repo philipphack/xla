@@ -25,6 +25,10 @@ load(
     "@tsl//tsl/platform:rules_cc.bzl",
     "cc_library",
 )
+load(
+    "@local_config_tensorrt//:build_defs.bzl",
+    "if_tensorrt",
+)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -615,7 +619,11 @@ cc_library(
         ":cudnn_plugin",
         ":cufft_plugin",
         ":curand_plugin",
-    ],
+        ":cusolver_lib",
+        ":cusparse_lib",
+    ] + if_tensorrt([
+        "//tensorflow/compiler/tf2tensorrt:tensorrt_lib",
+    ]),
     alwayslink = 1,
 )
 
