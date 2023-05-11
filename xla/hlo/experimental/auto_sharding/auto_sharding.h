@@ -163,6 +163,9 @@ struct AutoShardingOption {
   // one for a potentially better auto-sharding solution.
   bool try_multiple_mesh_shapes = false;
   std::vector<int64_t> strategy_vector;
+  // If greater than zero, tensors smaller than this limit will always be
+  // replicated.
+  int64_t small_tensor_byte_size = 64;
 
   std::string ToString() {
     std::vector<std::string> lines;

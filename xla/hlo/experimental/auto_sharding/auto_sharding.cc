@@ -4212,6 +4212,12 @@ StatusOr<bool> AutoShardingImplementation::RunAutoSharding(
 AutoSharding::AutoSharding(const AutoShardingOption& option)
     : option_(option) {}
 
+bool IsSmallTensor(const HloInstruction* ins,
+                   const AutoShardingOption& option) {
+  return !ins->shape().IsTuple() &&
+         ShapeUtil::ByteSizeOf(ins->shape()) < option.small_tensor_byte_size;
+}
+
 StatusOr<bool> AutoSharding::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
@@ -4225,6 +4231,17 @@ StatusOr<bool> AutoSharding::Run(
 
   TF_RETURN_IF_ERROR(option_.CheckAndSetup());
   VLOG(1) << "AutoShardingOptions:\n" << option_.ToString();
+
+  if (option_.small_tensor_byte_size >= 0) {
+    for (auto computation : module->computations()) {
+      for (auto instruction : computation->instructions()) {
+        if (!instruction->has_sharding() && !instruction->shape().IsTuple() &&
+            IsSmallTensor(instruction, option_)) {
+          instruction->set_sharding(HloSharding::Replicate());
+        }
+      }
+    }
+  }
 
   if (!option_.try_multiple_mesh_shapes) {
     AutoShardingImplementation pass(option_);
