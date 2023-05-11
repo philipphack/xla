@@ -66,6 +66,13 @@ Status ValidateHostPortPair(const string& host_port) {
 
 ::grpc::ChannelArguments* CreateDefaultChannelArguments() {
   ::grpc::ChannelArguments* args = new ::grpc::ChannelArguments();
+  // Configure good default arguments.
+  args->SetInt("grpc.keepalive_time_ms", 60000);
+  args->SetInt("grpc.keepalive_timeout_ms", 14400000);
+  args->SetInt("grpc.http2.max_pings_without_data", 0);
+  args->SetInt("grpc.http2.min_ping_interval_without_data_ms", 300000);
+  args->SetInt("grpc.http2.max_ping_strikes", 0);
+
   const char* env = std::getenv("TF_GRPC_DEFAULT_OPTIONS");
   if (env != nullptr) {
     for (auto& grpc_option : absl::StrSplit(env, ',')) {
@@ -96,6 +103,7 @@ Status ValidateHostPortPair(const string& host_port) {
       }
     }
   }
+
   return args;
 }
 
