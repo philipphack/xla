@@ -288,6 +288,12 @@ PJRT_TopologyDescription* CreateWrapperDeviceTopology(
 // should be destroyed with PJRT_Client_Destroy.
 PJRT_Client* CreateWrapperClient(std::unique_ptr<xla::PjRtClient> cpp_client);
 
+xla::PjRtClient::KeyValueGetCallback ToCppKeyValueGetCallback(
+    PJRT_KeyValueGetCallback c_callback, void* user_arg);
+
+xla::PjRtClient::KeyValuePutCallback ToCppKeyValuePutCallback(
+    PJRT_KeyValuePutCallback c_callback, void* user_arg);
+
 // Creates a PJRT_Api with create_fn from the input and other functions in
 // pjrt_c_api_wrapper_impl.
 constexpr PJRT_Api CreatePjrtApi(

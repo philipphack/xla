@@ -160,6 +160,27 @@ xla::PjRtChunk ConvertToCppChunk(const PJRT_Chunk& chunk);
 PJRT_DeviceDescription* GetDeviceDescription(const PJRT_Api* api,
                                              PJRT_Device* device);
 
+using PJRT_KeyValueGetCFunc =
+    std::function<PJRT_Error*(PJRT_KeyValueGet_Args* args)>;
+using PJRT_KeyValuePutCFunc =
+    std::function<PJRT_Error*(PJRT_KeyValuePut_Args* args)>;
+// Groups data needed to support key value get/put callbacks.
+struct PJRT_KeyValueCallbackData {
+  xla::PjRtClient::KeyValueGetCallback kv_get;
+  xla::PjRtClient::KeyValuePutCallback kv_put;
+  // kv_get_c_func and kv_put_c_func are holding pointers to kv_get and kv_put.
+  pjrt::PJRT_KeyValueGetCFunc kv_get_c_func;
+  pjrt::PJRT_KeyValuePutCFunc kv_put_c_func;
+};
+
+std::unique_ptr<PJRT_KeyValueCallbackData> ConvertToCKeyValueCallbacks(
+    xla::PjRtClient::KeyValueGetCallback kv_get,
+    xla::PjRtClient::KeyValuePutCallback kv_put);
+
+PJRT_KeyValueGetCallback ToCKVGetCallback(PJRT_KeyValueGetCFunc* kv_get_c_func);
+
+PJRT_KeyValuePutCallback ToCKVPutCallback(PJRT_KeyValuePutCFunc* kv_put_c_func);
+
 }  // namespace pjrt
 
 #endif  // XLA_PJRT_C_PJRT_C_API_HELPERS_H_

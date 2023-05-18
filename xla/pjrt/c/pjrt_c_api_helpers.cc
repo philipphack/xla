@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -590,6 +591,88 @@ PJRT_DeviceDescription* GetDeviceDescription(const PJRT_Api* api,
   args.device = device;
   pjrt::LogFatalIfPjrtError(api->PJRT_Device_GetDescription(&args), api);
   return args.device_description;
+}
+
+static PJRT_KeyValueGetCFunc ToKVGetCFunc(
+    const xla::PjRtClient::KeyValueGetCallback& cpp_kv_get) {
+  PJRT_KeyValueGetCFunc kv_get_c_func =
+      [&cpp_kv_get](PJRT_KeyValueGet_Args* args) -> PJRT_Error* {
+    xla::StatusOr<std::string> output =
+        cpp_kv_get(std::string(args->key, args->key_size),
+                   absl::Milliseconds(args->timeout_in_ms));
+    if (!output.ok()) {
+      absl::string_view message = output.status().message();
+      return (*args->error_callback)(
+          StatusCodeToPjrtErrorCode(output.status().code()), message.data(),
+          message.size());
+    }
+    args->value = new char[output->size()];
+    std::copy(output->begin(), output->end(), args->value);
+    args->value_size = output->size();
+    PJRT_ValueDeleterCallback value_deleter_callback = [](char* value) {
+      delete[] value;
+    };
+    *args->value_delete_callback = value_deleter_callback;
+    return nullptr;
+  };
+  return kv_get_c_func;
+}
+
+static PJRT_KeyValuePutCFunc ToKVPutCFunc(
+    const xla::PjRtClient::KeyValuePutCallback& cpp_kv_put) {
+  PJRT_KeyValuePutCFunc kv_put_c_func =
+      [&cpp_kv_put](PJRT_KeyValuePut_Args* args) -> PJRT_Error* {
+    xla::Status status = cpp_kv_put(std::string(args->key, args->key_size),
+                                    std::string(args->value, args->value_size));
+    if (!status.ok()) {
+      absl::string_view message = status.message();
+      return (*args->error_callback)(StatusCodeToPjrtErrorCode(status.code()),
+                                     message.data(), message.size());
+    }
+    return nullptr;
+  };
+  return kv_put_c_func;
+}
+
+std::unique_ptr<PJRT_KeyValueCallbackData> ConvertToCKeyValueCallbacks(
+    xla::PjRtClient::KeyValueGetCallback kv_get,
+    xla::PjRtClient::KeyValuePutCallback kv_put) {
+  auto kv_callback_data = std::make_unique<PJRT_KeyValueCallbackData>();
+  kv_callback_data->kv_get = kv_get;
+  kv_callback_data->kv_put = kv_put;
+  kv_callback_data->kv_get_c_func = ToKVGetCFunc(kv_callback_data->kv_get);
+  kv_callback_data->kv_put_c_func = ToKVPutCFunc(kv_callback_data->kv_put);
+  return kv_callback_data;
+}
+
+PJRT_KeyValueGetCallback ToCKVGetCallback(
+    PJRT_KeyValueGetCFunc* kv_get_c_func) {
+  return [](PJRT_KeyValueGet_Args* args) -> PJRT_Error* {
+    PJRT_KeyValueGetCFunc* kv_get_c_func =
+        reinterpret_cast<PJRT_KeyValueGetCFunc*>(args->user_arg);
+    if (kv_get_c_func == nullptr) {
+      xla::Status status = xla::InvalidArgument("invalid user_arg");
+      return (*args->error_callback)(StatusCodeToPjrtErrorCode(status.code()),
+                                     status.message().data(),
+                                     status.message().size());
+    }
+    return (*kv_get_c_func)(args);
+  };
+}
+
+PJRT_KeyValuePutCallback ToCKVPutCallback(
+    PJRT_KeyValuePutCFunc* kv_put_c_func) {
+  return [](PJRT_KeyValuePut_Args* args) -> PJRT_Error* {
+    PJRT_KeyValuePutCFunc* kv_put_c_func =
+        reinterpret_cast<PJRT_KeyValuePutCFunc*>(args->user_arg);
+    if (kv_put_c_func == nullptr) {
+      xla::Status status = xla::InvalidArgument("invalid user_arg");
+      return (*args->error_callback)(StatusCodeToPjrtErrorCode(status.code()),
+                                     status.message().data(),
+                                     status.message().size());
+    }
+    return (*kv_put_c_func)(args);
+  };
 }
 
 }  // namespace pjrt

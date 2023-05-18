@@ -71,10 +71,13 @@ namespace xla {
 
 // ---------------------------------- Client -----------------------------------
 
-PjRtCApiClient::PjRtCApiClient(const PJRT_Api* c_api, PJRT_Client* c_client)
+PjRtCApiClient::PjRtCApiClient(
+    const PJRT_Api* c_api, PJRT_Client* c_client,
+    std::unique_ptr<pjrt::PJRT_KeyValueCallbackData> kv_callback_data)
     : c_api_(c_api),
       c_client_(std::unique_ptr<PJRT_Client, ::pjrt::PJRT_ClientDeleter>(
           c_client, ::pjrt::MakeClientDeleter(c_api))),
+      kv_callback_data_(std::move(kv_callback_data)),
       // Example platform version string:
       //   PJRT C API
       //   TFRT TPU v2
@@ -1652,7 +1655,9 @@ StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCApiCompiler::Compile(
 
 StatusOr<std::unique_ptr<PjRtClient>> GetCApiClient(
     absl::string_view device_type,
-    const absl::flat_hash_map<std::string, PjRtValueType>& create_options) {
+    const absl::flat_hash_map<std::string, PjRtValueType>& create_options,
+    PjRtClient::KeyValueGetCallback kv_get,
+    PjRtClient::KeyValuePutCallback kv_put) {
   TF_ASSIGN_OR_RETURN(const PJRT_Api* c_api, pjrt::PjrtApi(device_type));
   if (c_api == nullptr) {
     return InternalError("PJRT C API is nullptr for %s", device_type);
@@ -1665,11 +1670,21 @@ StatusOr<std::unique_ptr<PjRtClient>> GetCApiClient(
                       pjrt::ConvertToPjRtNamedValueList(create_options));
   init_args.create_options = c_options.data();
   init_args.num_options = c_options.size();
+
+  std::unique_ptr<pjrt::PJRT_KeyValueCallbackData> kv_callback_data =
+      pjrt::ConvertToCKeyValueCallbacks(kv_get, kv_put);
+  init_args.kv_get_callback =
+      pjrt::ToCKVGetCallback(&kv_callback_data->kv_get_c_func);
+  init_args.kv_get_user_arg = &kv_callback_data->kv_get_c_func;
+  init_args.kv_put_callback =
+      pjrt::ToCKVPutCallback(&kv_callback_data->kv_put_c_func);
+  init_args.kv_put_user_arg = &kv_callback_data->kv_put_c_func;
+
   RETURN_STATUS_IF_ERROR(c_api->PJRT_Client_Create(&init_args), c_api);
   PJRT_Client* c_client = init_args.client;
 
-  return std::unique_ptr<PjRtClient>(
-      std::make_unique<PjRtCApiClient>(c_api, c_client));
+  return std::unique_ptr<PjRtClient>(std::make_unique<PjRtCApiClient>(
+      c_api, c_client, std::move(kv_callback_data)));
 }
 
 StatusOr<std::unique_ptr<PjRtTopologyDescription>> GetCApiTopology(
