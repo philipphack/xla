@@ -20,12 +20,23 @@ _T = TypeVar("_T")
 
 version: int
 
-def flatten(
-    tree: Any,
-    leaf_predicate: Optional[Callable[[Any], bool]] = ...,
-) -> Tuple[List[Any], PyTreeDef]: ...
-def tuple(arg0: Sequence[PyTreeDef]) -> PyTreeDef: ...
-def all_leaves(arg0: Iterable[Any]) -> bool: ...
+class PyTreeRegistry:
+  def __init__(self, *, enable_none: bool = ..., enable_tuple: bool = ...,
+               enable_namedtuple: bool = ..., enable_list: bool = ...,
+               enable_dict: bool = ...): ...
+  def flatten(
+      self,
+      tree: Any,
+      leaf_predicate: Optional[Callable[[Any], bool]] = ...,
+  ) -> Tuple[List[Any], PyTreeDef]: ...
+  def register_node(
+      self,
+      __type: Type[_T],
+      to_iterable: Callable[[_T], Tuple[_Children, _AuxData]],
+      from_iterable: Callable[[_AuxData, _Children], _T]) -> Any: ...
+
+def tuple(registry: PyTreeRegistry, arg0: Sequence[PyTreeDef]) -> PyTreeDef: ...
+def all_leaves(registry: PyTreeRegistry, arg0: Iterable[Any]) -> bool: ...
 
 class PyTreeDef:
   def unflatten(self, __leaves: Iterable[Any]) -> Any: ...
@@ -49,7 +60,3 @@ class PyTreeDef:
 _Children = TypeVar("_Children", bound=Iterable[Any])
 _AuxData = TypeVar("_AuxData", bound=Hashable)
 
-def register_node(
-    __type: Type[_T],
-    to_iterable: Callable[[_T], Tuple[_Children, _AuxData]],
-    from_iterable: Callable[[_AuxData, _Children], _T]) -> Any: ...
