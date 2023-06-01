@@ -226,6 +226,18 @@ PYBIND11_MODULE(xla_extension, m) {
              }
              return ValueOrThrow(LiteralToPython(std::move(literal)));
            })
+      // Returns all memory spaces that can be addressed by this device.
+      .def("addressable_memory_spaces",
+           [](const ClientAndPtr<PjRtDevice>& device) {
+             std::vector<ClientAndPtr<PjRtMemorySpace>> memory_spaces;
+             auto span = device->memory_spaces();
+             memory_spaces.reserve(span.size());
+             for (auto* memory_space : span) {
+               memory_spaces.push_back(
+                   WrapWithClient(device.client(), memory_space));
+             }
+             return memory_spaces;
+           })
       .def("live_buffers",
            [](const ClientAndPtr<PjRtDevice>& device) {
              PythonDeprecationWarning(
@@ -310,6 +322,38 @@ PYBIND11_MODULE(xla_extension, m) {
   device.attr("__getattr__") =
       py::reinterpret_steal<py::object>(PyDescr_NewMethod(
           reinterpret_cast<PyTypeObject*>(device.ptr()), &get_attr_method));
+
+  py::class_<PjRtMemorySpace, ClientAndPtr<PjRtMemorySpace>> memory_space(
+      m, "MemorySpace");
+  memory_space
+      .def_property_readonly(
+          "process_index",
+          [](const ClientAndPtr<PjRtMemorySpace>& memory_space) {
+            return memory_space.client()->process_index();
+          })
+      .def_property_readonly(
+          "platform",
+          [](const ClientAndPtr<PjRtMemorySpace>& memory_space) {
+            return memory_space.client()->platform_name();
+          })
+      .def_property_readonly("kind", &PjRtMemorySpace::memory_space_kind)
+      .def_property_readonly(
+          "client",
+          [](const ClientAndPtr<PjRtMemorySpace>& memory_space)
+              -> std::shared_ptr<PyClient> { return memory_space.client(); })
+      .def("__str__", &PjRtMemorySpace::DebugString)
+      .def("__repr__", &PjRtMemorySpace::ToString)
+      // Returns all devices that can address this memory space.
+      .def("addressable_devices",
+           [](const ClientAndPtr<PjRtMemorySpace>& memory_space) {
+             std::vector<ClientAndPtr<PjRtDevice>> devices;
+             auto span = memory_space->devices();
+             devices.reserve(span.size());
+             for (PjRtDevice* device : span) {
+               devices.push_back(WrapWithClient(memory_space.client(), device));
+             }
+             return devices;
+           });
 
   // Local XLA client methods.
 

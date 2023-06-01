@@ -2232,6 +2232,15 @@ def TestFactory(xla_backend,
           self.assertEqual(type(stats["largest_alloc_size"]), int)
           self.assertGreaterEqual(stats["largest_alloc_size"], 0)
 
+    @unittest.skipIf(pathways, "not implemented")
+    def testMemorySpaces(self):
+      for device in self.backend.local_devices():
+        for memory_space in device.addressable_memory_spaces():
+          self.assertEqual(memory_space.platform, device.platform)
+          self.assertEqual(memory_space.client, device.client)
+          self.assertEqual(memory_space.process_index, device.process_index)
+          self.assertIn(device, memory_space.addressable_devices())
+
   tests.append(DeviceTest)
 
   class ErrorTest(ComputationTest):
