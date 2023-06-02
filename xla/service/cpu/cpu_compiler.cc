@@ -83,7 +83,6 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/map_util.h"
 #include "xla/mlir/framework/ir/xla_framework.h"
-#include "xla/mlir/framework/transforms/passes.h"
 #include "xla/mlir/runtime/ir/rt_dialect.h"
 #include "xla/mlir/runtime/transforms/calling_convention.h"
 #include "xla/mlir/runtime/transforms/compilation_pipeline_cpu.h"
@@ -130,7 +129,7 @@ limitations under the License.
 #include "xla/service/cpu/runtime/convolution_call.h"
 #include "xla/service/cpu/runtime/custom_call.h"
 #include "xla/service/cpu/runtime/fft_call.h"
-#include "xla/service/cpu/runtime/rng.h"
+#include "xla/service/cpu/runtime/rng_call.h"
 #include "xla/service/cpu/runtime/xfeed.h"
 #include "xla/service/cpu/simple_orc_jit.h"
 #include "xla/service/cpu/xla_framework.h"
@@ -1103,11 +1102,10 @@ Status LowerMLIRModule(HloModule* module, mlir::ModuleOp mlir_module,
   HloXlaRuntimePipelineOptions options = GetHloXlaRuntimePipelineOptions(
       target.getTargetTriple(), target.getTargetCPU());
   options.sparse_bufferization = false;
-  options.outline_with_xla_framework = false;
   TF_RETURN_IF_ERROR(CreateHloXlaRuntimePipeline(xla_pm, options));
 
   runtime::CpuPipelineOptions cpu_pipeline_opts;
-  CreateDefaultXlaCpuAOTCompilationPipeline(xla_pm, cpu_pipeline_opts);
+  CreateDefaultXlaCpuRuntimeCompilationPipeline(xla_pm, cpu_pipeline_opts);
 
   if (pm.run(mlir_module).failed()) {
     mlir_module->dump();
