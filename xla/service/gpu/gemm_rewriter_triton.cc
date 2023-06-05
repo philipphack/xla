@@ -791,6 +791,7 @@ bool IsTritonHandledGEMM(const HloInstruction& dot,
         DimensionOrder::FromDotOperand(dot, operand_number);
     while (TryToFuse(input, dim_order, gpu_version).ok()) {
       if (input->opcode() == HloOpcode::kConvert ||
+          input->opcode() == HloOpcode::kCopy ||
           input->opcode() == HloOpcode::kTranspose) {
         return true;
       }

@@ -444,6 +444,31 @@ ENTRY e {
 )");
 }
 
+TEST_F(TritonGemmTest, FuseTransposeWithoutMixedTypes) {
+  const std::string kHloText = R"(
+HloModule m
+
+ENTRY e {
+  tmp_0 = f16[150,32,60]{2,1,0} parameter(1)
+  tmp_1 = f16[75,2,26,60]{3,2,1,0} parameter(0)
+  tmp_2 = f16[75,2,60,26]{3,2,1,0} transpose(tmp_1), dimensions={0,1,3,2}
+  tmp_3 = f16[150,60,26]{2,1,0} reshape(tmp_2)
+  ROOT tmp_4 = f16[150,32,26]{2,1,0} dot(tmp_0, tmp_3),
+    lhs_batch_dims={0}, lhs_contracting_dims={2},
+    rhs_batch_dims={0}, rhs_contracting_dims={1}
+})";
+
+  MatchOptimizedHlo(kHloText, R"(
+; CHECK: ENTRY
+; CHECK-NEXT: parameter
+; CHECK-NEXT: parameter
+; CHECK-NEXT: ROOT
+; CHECK-SAME: kCustom
+)");
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
+}
+
 class TritonGemmTestAny : public TritonGemmTest {
  public:
   DebugOptions GetDebugOptionsForTest() override {
