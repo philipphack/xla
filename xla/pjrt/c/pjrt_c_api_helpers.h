@@ -18,7 +18,9 @@ limitations under the License.
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -159,6 +161,13 @@ xla::PjRtChunk ConvertToCppChunk(const PJRT_Chunk& chunk);
 
 PJRT_DeviceDescription* GetDeviceDescription(const PJRT_Api* api,
                                              PJRT_Device* device);
+
+xla::StatusOr<PJRT_Layout> ConvertToCLayout(
+    const xla::Layout* cpp_layout,
+    std::optional<absl::Span<int64_t const>> byte_strides);
+
+xla::StatusOr<std::variant<xla::Layout, absl::Span<int64_t const>>>
+ConvertFromCLayout(PJRT_Layout* c_layout);
 
 }  // namespace pjrt
 

@@ -28,6 +28,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "xla/client/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -395,7 +396,22 @@ PJRT_Error* PJRT_Client_BufferFromHostBuffer(
       absl::Span<const int64_t>(args->dims, args->num_dims);
 
   std::optional<absl::Span<int64_t const>> byte_strides = std::nullopt;
-  if (args->byte_strides != nullptr) {
+  if (args->byte_strides != nullptr && args->layout != nullptr) {
+    LOG_FIRST_N(INFO, 1)
+        << "Both byte_strides and layout are set in  "
+           "PJRT_Client_BufferFromHostBuffer. layout will be used";
+  }
+  std::optional<xla::Layout> layout = std::nullopt;
+  if (args->layout != nullptr) {
+    std::variant<xla::Layout, absl::Span<int64_t const>> layout_or_strides;
+    PJRT_ASSIGN_OR_RETURN(layout_or_strides, ConvertFromCLayout(args->layout));
+    if (std::holds_alternative<xla::Layout>(layout_or_strides)) {
+      layout = std::get<xla::Layout>(layout_or_strides);
+    } else if (std::holds_alternative<absl::Span<int64_t const>>(
+                   layout_or_strides)) {
+      byte_strides = std::get<absl::Span<int64_t const>>(layout_or_strides);
+    }
+  } else if (args->byte_strides != nullptr) {
     byte_strides =
         absl::Span<const int64_t>(args->byte_strides, args->num_byte_strides);
   }
@@ -414,7 +430,8 @@ PJRT_Error* PJRT_Client_BufferFromHostBuffer(
           byte_strides,
           ::pjrt::ConvertFromPjRtHostBufferSemantics(
               args->host_buffer_semantics),
-          on_done_with_host_buffer, args->device->device));
+          on_done_with_host_buffer, args->device->device,
+          layout.has_value() ? &layout.value() : nullptr));
 
   args->buffer = new PJRT_Buffer{std::move(buffer), args->client};
   args->done_with_host_buffer =

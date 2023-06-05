@@ -53,7 +53,7 @@ extern "C" {
 // Changes include:
 // * Adding a new field to the PJRT_Api or argument structs
 // * Renaming a method or argument (doesn't affect ABI)
-#define PJRT_API_MINOR 1
+#define PJRT_API_MINOR 2
 
 // The plugin should set the major_version and minor_version of
 // PJRT_Api.pjrt_api_version to be the `PJRT_API_MAJOR` and `PJRT_API_MINOR` in
@@ -501,6 +501,56 @@ typedef enum {
   PJRT_HostBufferSemantics_kZeroCopy,
 } PJRT_HostBufferSemantics;
 
+// Maximum number of array elements to inline into structs for performance.
+#define PJRT_C_API_MAX_INLINED 6
+
+typedef struct PJRT_Int64List {
+  size_t struct_size;
+  void* priv;
+  union {
+    int64_t* heap;  // owned
+    int64_t inlined[PJRT_C_API_MAX_INLINED];
+  };
+  int64_t size;
+} PJRT_Int64List;
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_Int64List, size);
+
+typedef enum {
+  PJRT_Layout_TiledLayout = 0,
+  PJRT_Layout_Strides,
+} PJRT_Layout_Type;
+
+// Describe the layout on the device. It can be (1) a list of minor-to-major
+// order and optional tilings, or (2) a list of strides.
+struct PJRT_Layout {
+  struct PJRT_TiledLayout {
+    PJRT_Int64List minor_to_major;
+    union {
+      // Each tile is a PJRT_Int64List representing the physical dimensions of
+      // the tile.
+      PJRT_Int64List* tiles_heap;  // owned
+      PJRT_Int64List tiles_inlined[PJRT_C_API_MAX_INLINED];
+    };
+    int64_t tiles_size;
+  };
+  struct PJRT_Strides {
+    const int64_t* byte_strides;
+    size_t num_byte_strides;
+  };
+
+  size_t struct_size;
+  void* priv;
+  union {
+    PJRT_TiledLayout tiled_layout;
+    // Caution: `strides` are allowed to be negative, in which case `data`
+    // may need to point to the interior of the buffer, not necessarily its
+    // start.
+    PJRT_Strides strides;
+  };
+  PJRT_Layout_Type type;
+};
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_Layout, type);
+
 struct PJRT_Client_BufferFromHostBuffer_Args {
   size_t struct_size;
   void* priv;
@@ -512,13 +562,20 @@ struct PJRT_Client_BufferFromHostBuffer_Args {
   // The array dimensions of `data`.
   const int64_t* dims;
   size_t num_dims;
-  // Number of bytes to traverse per dimension. Must be the same size as `dims`,
-  // or empty. If empty, the array is assumed to have a dense layout with
-  // dimensions in major-to-minor order
-  // Caution: `byte_strides` are allowed to be negative, in which case `data`
-  // may need to point to the interior of the buffer, not necessarily its start.
+
+  // TODO(b/286121634): byte_strides and num_byte_strides are deprecated. Delete
+  // them.
+  // Number of bytes to traverse per dimension. Must be the same size as
+  // `dims`, or empty. If empty, the array is assumed to have a dense layout
+  // with dimensions in major-to-minor order Caution: `byte_strides` are allowed
+  // to be negative, in which case `data` may need to point to the interior of
+  // the buffer, not necessarily its start.
   const int64_t* byte_strides;
   size_t num_byte_strides;
+
+  // If not set, the array is assumed to have a dense layout with dimensions in
+  // major-to-minor order.
+  PJRT_Layout* layout;
 
   PJRT_HostBufferSemantics host_buffer_semantics;
 
@@ -1105,9 +1162,6 @@ PJRT_DEFINE_STRUCT_TRAITS(PJRT_Buffer_Destroy_Args, buffer);
 // called and frees `buffer`. `buffer` can be nullptr.
 typedef PJRT_Error* PJRT_Buffer_Destroy(PJRT_Buffer_Destroy_Args* args);
 
-// Maximum number of array elements to inline into structs for performance.
-#define PJRT_C_API_MAX_INLINED 6
-
 typedef struct PJRT_IntList {
   union {
     int* heap;  // owned
@@ -1115,14 +1169,6 @@ typedef struct PJRT_IntList {
   };
   int64_t size;
 } PJRT_IntList;
-
-typedef struct PJRT_Int64List {
-  union {
-    int64_t* heap;  // owned
-    int64_t inlined[PJRT_C_API_MAX_INLINED];
-  };
-  int64_t size;
-} PJRT_Int64List;
 
 typedef struct PJRT_BoolList {
   union {

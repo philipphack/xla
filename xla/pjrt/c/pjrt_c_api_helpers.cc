@@ -15,14 +15,17 @@ limitations under the License.
 
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 
+#include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_future.h"
@@ -36,6 +39,52 @@ namespace pjrt {
 const absl::string_view kHloFormat = "hlo";
 const absl::string_view kMlirFormat = "mlir";
 const absl::string_view kHloWithConfigFormat = "hlo_with_config";
+
+namespace {
+
+PJRT_Int64List ToCInt64List(const absl::Span<const int64_t> src) {
+  PJRT_Int64List dst;
+  dst.size = src.size();
+  if (dst.size > PJRT_C_API_MAX_INLINED) {
+    dst.heap = new int64_t[dst.size];
+    std::copy(src.begin(), src.end(), dst.heap);
+  } else {
+    std::copy(src.begin(), src.end(), dst.inlined);
+  }
+  return dst;
+}
+
+PJRT_Layout::PJRT_TiledLayout ToCTiledLayout(const xla::Layout* cpp_layout) {
+  PJRT_Layout::PJRT_TiledLayout dst;
+  dst.minor_to_major = ToCInt64List(cpp_layout->minor_to_major());
+  dst.tiles_size = cpp_layout->tiles().size();
+  PJRT_Int64List* c_tiles;
+  if (dst.tiles_size > PJRT_C_API_MAX_INLINED) {
+    dst.tiles_heap = new PJRT_Int64List[dst.tiles_size];
+    c_tiles = dst.tiles_heap;
+  } else {
+    c_tiles = dst.tiles_inlined;
+  }
+  for (int i = 0; i < dst.tiles_size; ++i) {
+    c_tiles[i] = ToCInt64List(cpp_layout->tiles()[i].dimensions());
+  }
+  return dst;
+}
+
+absl::Span<const int64_t> MakeInt64Span(const PJRT_Int64List& src_list) {
+  const int64_t* src = src_list.size > PJRT_C_API_MAX_INLINED
+                           ? src_list.heap
+                           : &src_list.inlined[0];
+  return absl::Span<const int64_t>(reinterpret_cast<const int64_t*>(src),
+                                   src_list.size);
+}
+
+xla::Tile FromCTile(const PJRT_Int64List& c_tile) {
+  absl::Span<const int64_t> dims = MakeInt64Span(c_tile);
+  return xla::Tile(dims);
+}
+
+}  // namespace
 
 PJRT_ClientDeleter MakeClientDeleter(const PJRT_Api* api) {
   return [api](PJRT_Client* client) -> void {
@@ -590,6 +639,89 @@ PJRT_DeviceDescription* GetDeviceDescription(const PJRT_Api* api,
   args.device = device;
   pjrt::LogFatalIfPjrtError(api->PJRT_Device_GetDescription(&args), api);
   return args.device_description;
+}
+
+xla::StatusOr<PJRT_Layout> ConvertToCLayout(
+    const xla::Layout* cpp_layout,
+    std::optional<absl::Span<int64_t const>> byte_strides) {
+  if (cpp_layout != nullptr && byte_strides.has_value()) {
+    return absl::InvalidArgumentError(
+        "Both xla::Layout and byte_strides are set when converting to "
+        "PJRT_Layout");
+  }
+  if (cpp_layout == nullptr && !byte_strides.has_value()) {
+    return absl::InvalidArgumentError(
+        "Both xla::Layout and byte_strides are not set when converting to "
+        "PJRT_Layout");
+  }
+  PJRT_Layout c_layout;
+  if (cpp_layout != nullptr) {
+    c_layout.type = PJRT_Layout_Type::PJRT_Layout_TiledLayout;
+    c_layout.tiled_layout = ToCTiledLayout(cpp_layout);
+  } else {
+    c_layout.type = PJRT_Layout_Type::PJRT_Layout_Strides;
+    c_layout.strides.byte_strides = byte_strides.value().data();
+    c_layout.strides.num_byte_strides = byte_strides.value().size();
+  }
+  return c_layout;
+}
+
+static xla::Layout ConvertFromCLayoutToCppLayout(
+    const PJRT_Layout::PJRT_TiledLayout& tiled_layout) {
+  absl::Span<const int64_t> minor_to_major =
+      MakeInt64Span(tiled_layout.minor_to_major);
+  absl::InlinedVector<xla::Tile, 1> tiles;
+  const PJRT_Int64List* c_tiles =
+      tiled_layout.tiles_size > PJRT_C_API_MAX_INLINED
+          ? tiled_layout.tiles_heap
+          : tiled_layout.tiles_inlined;
+  tiles.reserve(tiled_layout.tiles_size);
+  for (int i = 0; i < tiled_layout.tiles_size; ++i) {
+    tiles.push_back(FromCTile(c_tiles[i]));
+  }
+  xla::Layout layout = xla::Layout(minor_to_major);
+  layout.mutable_tiles()->assign(tiles.begin(), tiles.end());
+
+  return layout;
+}
+
+static void DestroyTiledLayout(PJRT_Layout::PJRT_TiledLayout& tiled_layout) {
+  if (tiled_layout.minor_to_major.size > PJRT_C_API_MAX_INLINED) {
+    delete[] tiled_layout.minor_to_major.heap;
+  }
+  PJRT_Int64List* c_tiles = tiled_layout.tiles_size > PJRT_C_API_MAX_INLINED
+                                ? tiled_layout.tiles_heap
+                                : tiled_layout.tiles_inlined;
+  for (int i = 0; i < tiled_layout.tiles_size; ++i) {
+    if (c_tiles[i].size > PJRT_C_API_MAX_INLINED) {
+      delete[] c_tiles[i].heap;
+    }
+  }
+  if (tiled_layout.tiles_size > PJRT_C_API_MAX_INLINED) {
+    delete[] tiled_layout.tiles_heap;
+  }
+}
+
+xla::StatusOr<std::variant<xla::Layout, absl::Span<int64_t const>>>
+ConvertFromCLayout(PJRT_Layout* c_layout) {
+  std::variant<xla::Layout, absl::Span<int64_t const>> result;
+  switch (c_layout->type) {
+    case PJRT_Layout_Type::PJRT_Layout_TiledLayout: {
+      result = ConvertFromCLayoutToCppLayout(c_layout->tiled_layout);
+      DestroyTiledLayout(c_layout->tiled_layout);
+      return result;
+    }
+    case PJRT_Layout_Type::PJRT_Layout_Strides: {
+      result = absl::Span<const int64_t>(
+          reinterpret_cast<const int64_t*>(c_layout->strides.byte_strides),
+          c_layout->strides.num_byte_strides);
+      return result;
+    }
+    default: {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unexpected PJRT_Layout_Type type: ", c_layout->type));
+    }
+  }
 }
 
 }  // namespace pjrt
