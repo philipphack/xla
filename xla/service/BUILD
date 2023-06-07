@@ -6361,7 +6361,6 @@ py_test(
     # TODO(b/200806426): Test fails in OSS.
     tags = [
         "no_oss",
-        "nopip",
     ],
     deps = [
         ":generate_test_hlo_checks",

@@ -1674,7 +1674,9 @@ cc_library(
 xla_cc_test(
     name = "instruction_fusion_test",
     srcs = ["instruction_fusion_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":gpu_device_info_for_tests",
         ":gpu_fusible",
@@ -1714,7 +1716,9 @@ cc_library(
 xla_cc_test(
     name = "multi_output_fusion_test",
     srcs = ["multi_output_fusion_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":gpu_device_info_for_tests",
         ":gpu_fusible",
@@ -1787,7 +1791,9 @@ cc_library(
 xla_cc_test(
     name = "fusion_merger_test",
     srcs = ["fusion_merger_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":fusion_merger",
         ":gpu_device_info",
@@ -2012,7 +2018,9 @@ cc_library(
 xla_cc_test(
     name = "cublas_pad_for_gemms_test",
     srcs = ["cublas_pad_for_gemms_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":cublas_pad_for_gemms",
         ":ir_emission_utils",
@@ -2679,7 +2687,7 @@ xla_cc_test(
     srcs = [
         "gpu_hlo_schedule_test.cc",
     ],
-    tags = tf_cuda_tests_tags() + ["no_pip"],
+    tags = tf_cuda_tests_tags(),
     deps = [
         ":gpu_device_info",
         ":gpu_hlo_schedule",
@@ -2697,7 +2705,9 @@ xla_cc_test(
 xla_cc_test(
     name = "while_transformer_test",
     srcs = ["while_transformer_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":instruction_fusion",
         "//xla:shape_util",
@@ -2885,7 +2895,9 @@ cc_library(
 xla_cc_test(
     name = "gpu_fusible_test",
     srcs = ["gpu_fusible_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":gpu_fusible",
         "//xla/hlo/ir:hlo",
@@ -3064,7 +3076,9 @@ cc_library(
 xla_cc_test(
     name = "variadic_op_splitter_test",
     srcs = ["variadic_op_splitter_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":ir_emission_utils",
         ":variadic_op_splitter",
@@ -3110,7 +3124,9 @@ xla_cc_test(
     name = "hlo_algorithm_denylist_test",
     srcs = ["hlo_algorithm_denylist_test.cc"],
     data = ["data/hlo_algorithm_denylist.pbtxt"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":hlo_algorithm_denylist",
         "//xla/stream_executor:dnn",
@@ -3137,7 +3153,9 @@ cc_library(
 xla_cc_test(
     name = "alias_passthrough_params_test",
     srcs = ["alias_passthrough_params_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":alias_passthrough_params",
         "//xla/tests:hlo_test_base",
@@ -3592,7 +3610,9 @@ cc_library(
 xla_cc_test(
     name = "hlo_fusion_stats_test",
     srcs = ["hlo_fusion_stats_test.cc"],
-    tags = ["no_pip"],
+    tags = [
+        "nomsan",
+    ],
     deps = [
         ":hlo_fusion_stats",
         "//xla:status_macros",

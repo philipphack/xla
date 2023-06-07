@@ -50,7 +50,6 @@ py_test(
     python_version = "PY3",
     srcs_version = "PY3",
     tags = [
-        "no_pip",
         "optonly",
     ],
     deps = [
@@ -66,7 +65,6 @@ py_test(
     python_version = "PY3",
     srcs_version = "PY3",
     tags = [
-        "no_pip",
         "optonly",
     ],
     deps = [
