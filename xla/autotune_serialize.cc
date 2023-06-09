@@ -20,13 +20,14 @@ limitations under the License.
 #include "xla/autotune_results.pb.h"
 #include "xla/service/gpu/gemm_algorithm_picker.h"
 #include "xla/service/gpu/gpu_conv_algorithm_picker.h"
+#include "xla/service/gpu/triton_autotuner.h"
 
 namespace xla {
 namespace {
 
 // Bump this version whenever you change the structure of the results.
 // LINT.IfChange(version)
-constexpr int kVersion = 1;
+constexpr int kVersion = 2;
 // LINT.ThenChange()
 
 }  // anonymous namespace
@@ -56,6 +57,7 @@ StatusOr<std::string> SerializeAutotuneResults() {
   TF_RETURN_IF_ERROR(
       gpu::GpuConvAlgorithmPicker::WriteAutotuneResults(&results));
   TF_RETURN_IF_ERROR(gpu::GemmAlgorithmPicker::WriteAutotuneResults(&results));
+  TF_RETURN_IF_ERROR(gpu::TritonAutotuner::WriteAutotuneResults(&results));
 
   return results.SerializeAsString();
 }
