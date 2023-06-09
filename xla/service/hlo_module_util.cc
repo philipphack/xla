@@ -172,11 +172,17 @@ void UpdateEntryComputationLayout(
     update_shape(&shape);
     *module->mutable_entry_computation_layout()->mutable_parameter_layout(i) =
         ShapeLayout(shape);
+    // Make sure main computation parameter has same layout.
+    update_shape(
+        module->entry_computation()->parameter_instruction(i)->mutable_shape());
   }
   Shape shape = module->entry_computation_layout().result_layout().shape();
   update_shape(&shape);
   *module->mutable_entry_computation_layout()->mutable_result_layout() =
       ShapeLayout(shape);
+  // Make sure main computation root instruction has same layout.
+  update_shape(
+      module->entry_computation()->root_instruction()->mutable_shape());
 }
 
 }  // namespace xla
