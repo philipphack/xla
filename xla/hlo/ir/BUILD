@@ -106,7 +106,7 @@ cc_library(
     srcs = ["hlo_module_group.cc"],
     hdrs = ["hlo_module_group.h"],
     deps = [
-        "//xla/hlo/ir:hlo",
+        ":hlo",
         "//xla/service:hlo_proto_cc",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -118,10 +118,23 @@ cc_library(
     srcs = ["hlo_reachability.cc"],
     hdrs = ["hlo_reachability.h"],
     deps = [
+        ":hlo",
         "//xla:types",
-        "//xla/hlo/ir:hlo",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "tile_assignment",
+    srcs = ["tile_assignment.cc"],
+    hdrs = ["tile_assignment.h"],
+    deps = [
+        "//xla:array",
+        "//xla:printer",
+        "//xla:util",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/types:span",
     ],
 )
