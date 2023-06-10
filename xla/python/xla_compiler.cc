@@ -1009,7 +1009,7 @@ void BuildXlaCompilerSubmodule(py::module& m) {
            })
       .def("tile_assignment_devices",
            [](const xla::HloSharding& self) {
-             return absl::MakeConstSpan(self.tile_assignment().data(),
+             return absl::MakeConstSpan(self.tile_assignment().array().data(),
                                         self.tile_assignment().num_elements());
            })
       .def("replicate_on_last_tile_dim",
