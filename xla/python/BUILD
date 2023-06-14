@@ -938,18 +938,6 @@ config_setting(
     },
 )
 
-bool_flag(
-    name = "enable_plugin_device",
-    build_setting_default = False,
-)
-
-config_setting(
-    name = "plugin_device_enabled",
-    flag_values = {
-        ":enable_plugin_device": "True",
-    },
-)
-
 # If this flag is enabled, it sets RPATH on the xla_extension to values that are suitable for
 # finding NVIDIA's CUDA libraries when they are installed as pip packages.
 bool_flag(
@@ -985,9 +973,6 @@ tsl_pybind_extension(
         "//conditions:default": [],
     }) + select({
         ":tpu_enabled": ["XLA_PYTHON_ENABLE_TPU=1"],
-        "//conditions:default": [],
-    }) + select({
-        ":plugin_device_enabled": ["XLA_PYTHON_ENABLE_PLUGIN_DEVICE=1"],
         "//conditions:default": [],
     }),
     linkopts = select({
@@ -1068,11 +1053,6 @@ tsl_pybind_extension(
         ":tpu_enabled": [
             "//xla/pjrt:tpu_client",
             "//xla/stream_executor/tpu:tpu_initializer_helper",
-        ],
-        "//conditions:default": [],
-    }) + select({
-        ":plugin_device_enabled": [
-            "//xla/pjrt:pjrt_plugin_device_client",
         ],
         "//conditions:default": [],
     }),
