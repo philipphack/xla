@@ -158,11 +158,11 @@ ENTRY entry {
 
   tensorflow::AutotuneResult::TritonGemmKey config;
   config.set_block_m(16);
-  config.set_block_n(32);
+  config.set_block_n(128);
   config.set_block_k(512);
   config.set_split_k(1);
-  config.set_num_stages(4);
-  config.set_num_warps(8);
+  config.set_num_stages(1);
+  config.set_num_warps(4);
   EXPECT_THAT(
       TritonWrapper("test_fn", triton_dot_computation,
                     se::CudaComputeCapability{se::CudaComputeCapability::AMPERE,
@@ -170,7 +170,7 @@ ENTRY entry {
                     dev_info, config, &llvm_module, &MatMul, mlir_context),
       tsl::testing::StatusIs(
           tsl::error::RESOURCE_EXHAUSTED,
-          absl::StrFormat("Requires too much shared memory: 294912 > %d",
+          absl::StrFormat("Requires too much shared memory: 270336 > %d",
                           dev_info.shared_memory_per_block_optin)));
 
   config.set_block_m(64);
@@ -573,7 +573,7 @@ ENTRY entry {
                     dev_info, config, &llvm_module, &MatMul, mlir_context),
       tsl::testing::StatusIs(
           tsl::error::RESOURCE_EXHAUSTED,
-          "Tiling complexity heuristic exceeded: 147456 > 9000"));
+          "Tiling complexity heuristic exceeded: 147456 > 28672"));
 
   // Succeeds if the tiling is not too complex.
   config.set_block_m(32);

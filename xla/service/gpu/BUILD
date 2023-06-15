@@ -1252,7 +1252,7 @@ cc_library(
 
 cc_library(
     name = "gpu_serializable_autotuner",
-    srcs = [],
+    srcs = ["gpu_serializable_autotuner.cc"],
     hdrs = ["gpu_serializable_autotuner.h"],
     deps = [
         "//xla:autotune_results_proto_cc",
@@ -2205,6 +2205,7 @@ cc_library(
         ":tree_reduction_rewriter",
         ":variadic_op_splitter",
         "//xla:autotune_results_proto_cc",
+        "//xla:autotune_serialize",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:types",

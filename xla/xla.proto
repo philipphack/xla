@@ -531,7 +531,18 @@ message DebugOptions {
   // kernel on GPU.
   bool xla_gpu_enable_experimental_block_size = 214;
 
-  // Next id: 219
+  bool xla_gpu_exhaustive_tiling_search = 219;
+
+  // File to write autotune results to.
+  // It will be a binary file unless the name ends with .txt or .textproto.
+  string xla_gpu_dump_autotune_results_to = 220;
+
+  // File to read autotune results from.
+  // It will be handled as a binary file unless the name ends with .txt or
+  // .textproto.
+  string xla_gpu_load_autotune_results_from = 221;
+
+  // Next id: 222
 
   // Extra options to pass to the compilation backend (e.g. LLVM); specific
   // interpretation of these values is left to the backend.

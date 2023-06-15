@@ -62,7 +62,8 @@ namespace xla {
 // padding heuristics it uses, and we don't want that to mean that all users of
 // ahead-of-time autotuning are broken.
 //
-StatusOr<std::string> SerializeAutotuneResults();
+StatusOr<std::string> SerializeAutotuneResults(bool as_textproto = false);
+// This can only load binary protos for now.
 Status LoadAutotuneResults(absl::string_view data);
 
 }  // namespace xla

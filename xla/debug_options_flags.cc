@@ -142,6 +142,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_collective_inflation_factor(1);
 
   opts.set_xla_gpu_enable_experimental_block_size(false);
+  opts.set_xla_gpu_exhaustive_tiling_search(false);
 
   return opts;
 }
@@ -1048,6 +1049,23 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                     &DebugOptions::set_xla_gpu_enable_experimental_block_size),
                 debug_options->xla_gpu_enable_experimental_block_size(),
                 "Enable experimental block size."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_exhaustive_tiling_search",
+      bool_setter_for(&DebugOptions::set_xla_gpu_exhaustive_tiling_search),
+      debug_options->xla_gpu_exhaustive_tiling_search(),
+      "Enable (slow) search for the Triton GEMM fusion tilings."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_dump_autotune_results_to",
+      string_setter_for(&DebugOptions::set_xla_gpu_dump_autotune_results_to),
+      debug_options->xla_gpu_dump_autotune_results_to(),
+      "File to write autotune results into. It will be a binary file unless "
+      "the name ends with .txt or .textproto."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_load_autotune_results_from",
+      string_setter_for(&DebugOptions::set_xla_gpu_load_autotune_results_from),
+      debug_options->xla_gpu_load_autotune_results_from(),
+      "File to write autotune results into. It will be a binary file unless "
+      "the name ends with .txt or .textproto."));
 }  // NOLINT(readability/fn_size)
 
 // Allocates flag_values and flag_objects; this function must not be called more

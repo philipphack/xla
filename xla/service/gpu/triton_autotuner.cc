@@ -16,6 +16,7 @@ limitations under the License.
 #include "xla/service/gpu/triton_autotuner.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -162,6 +163,7 @@ struct AutotuneConfig {
 
   int32_t autotune_level;
   bool should_crash_on_check_failure;
+  bool exhaustive_tiling_search;
 };
 
 struct CompilationResult {
@@ -196,7 +198,8 @@ static auto& ABSL_GUARDED_BY(
 // gemm_algorithm_picker.
 static AutotuneConfig GetConfig(const DebugOptions& debug_options) {
   return {debug_options.xla_gpu_autotune_level(),
-          debug_options.xla_gpu_crash_on_verification_failures()};
+          debug_options.xla_gpu_crash_on_verification_failures(),
+          debug_options.xla_gpu_exhaustive_tiling_search()};
 }
 
 // Create a buffer for a given operation using redzone checker, initialize based
@@ -314,7 +317,7 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
     VLOG(1) << "Tuning " << hlo->ToString();
     TF_ASSIGN_OR_RETURN(AutotuneResult autotune_result,
                         AutotuneMatmul(*hlo->called_computations()[0]));
-    VLOG(1) << "Result: " << autotune_result.DebugString();
+    VLOG(1) << "Result: " << autotune_result.ShortDebugString();
 
     TF_RET_CHECK(autotune_result.has_triton());
     AutotuneResult::TritonGemmKey tiling = autotune_result.triton();
@@ -414,7 +417,8 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
     const std::vector<AutotuneResult::TritonGemmKey> configurations =
         GetPossibleMatmulAutotuneConfigs(
             device_config.stream_exec->GetDeviceDescription()
-                .cuda_compute_capability());
+                .cuda_compute_capability(),
+            autotune_cfg.exhaustive_tiling_search);
 
     // Pre-compile all versions first using the thread pool.
     if (thread_pool_) {
@@ -458,7 +462,7 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
     }
 
     for (const AutotuneResult::TritonGemmKey& conf : configurations) {
-      VLOG(1) << "Trying triton tiling: " << conf.DebugString();
+      VLOG(1) << "Trying triton tiling: " << conf.ShortDebugString();
 
       AutotuneResult res;
       *res.mutable_triton() = conf;
@@ -606,6 +610,8 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
     options.set_xla_gpu_enable_triton_gemm(false);
     // Avoid dumping compilation steps.
     options.set_xla_dump_to("");
+    options.set_xla_gpu_dump_autotune_results_to("");
+    options.set_xla_gpu_load_autotune_results_from("");
     options.set_xla_gpu_dump_llvmir(false);
     // Avoid using another thread pool.
     options.set_xla_gpu_force_compilation_parallelism(1);
@@ -749,6 +755,8 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
     options.set_xla_gpu_enable_xla_runtime_executable(false);
     // Avoid dumping compilation steps of every autotuning variant.
     options.set_xla_dump_to("");
+    options.set_xla_gpu_dump_autotune_results_to("");
+    options.set_xla_gpu_load_autotune_results_from("");
     options.set_xla_gpu_dump_llvmir(false);
     // Avoid using another thread pool for PTX compilation - there are maximum
     // two functions to compile here.
@@ -857,9 +865,44 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
   tsl::thread::ThreadPool* thread_pool_;
 };
 
-}  // anonymous namespace
+// Search space for exhaustive matmul autotuning.
+constexpr std::array<int, 5> BLOCK_SIZES = {16, 32, 64, 128, 256};
+constexpr std::array<int, 4> NUM_STAGES = {1, 2, 3, 4};
+constexpr std::array<int, 4> NUM_WARPS = {2, 4, 8, 16};
+constexpr std::array<int, 4> SPLIT_K = {1, 2, 4, 8};
 
-std::vector<AutotuneResult::TritonGemmKey> GetPossibleMatmulAutotuneConfigs(
+std::vector<AutotuneResult::TritonGemmKey> GetExhaustiveMatmulAutotuneConfigs(
+    const se::CudaComputeCapability compute_capability) {
+  std::vector<AutotuneResult::TritonGemmKey> configs;
+  bool mma_layout_v2 =
+      compute_capability.IsAtLeast(se::CudaComputeCapability::AMPERE);
+  for (int num_warps : NUM_WARPS) {
+    for (int num_stages : NUM_STAGES) {
+      // Volta doesn't support num_stages > 2.
+      if (!mma_layout_v2 && num_stages > 2) {
+        continue;
+      }
+      for (int block_m : BLOCK_SIZES) {
+        for (int block_n : BLOCK_SIZES) {
+          // Exclude configs not supported by MMA layout v2.
+          if (mma_layout_v2 && (block_m * block_n / 256) % num_warps != 0) {
+            continue;
+          }
+          for (int block_k : BLOCK_SIZES) {
+            for (int split_k : SPLIT_K) {
+              auto config = GemmKey(block_m, block_n, block_k, split_k,
+                                    num_stages, num_warps);
+              configs.push_back(std::move(config));
+            }
+          }
+        }
+      }
+    }
+  }
+  return configs;
+}
+
+std::vector<AutotuneResult::TritonGemmKey> GetFixedMatmulAutotuneConfigs(
     const se::CudaComputeCapability compute_capability) {
   std::vector<AutotuneResult::TritonGemmKey> configs = {
       GemmKey(32, 32, 256, 1, 1, 4), GemmKey(64, 32, 32, 16, 1, 4),
@@ -895,6 +938,16 @@ std::vector<AutotuneResult::TritonGemmKey> GetPossibleMatmulAutotuneConfigs(
         configs.end());
   }
   return configs;
+}
+
+}  // anonymous namespace
+
+std::vector<AutotuneResult::TritonGemmKey> GetPossibleMatmulAutotuneConfigs(
+    const se::CudaComputeCapability compute_capability,
+    bool exhaustive_tiling_search) {
+  return exhaustive_tiling_search
+             ? GetExhaustiveMatmulAutotuneConfigs(compute_capability)
+             : GetFixedMatmulAutotuneConfigs(compute_capability);
 }
 
 std::unique_ptr<HloModule> ExtractInstructionIntoNewModule(
@@ -943,36 +996,13 @@ StatusOr<bool> TritonAutotuner::Run(
 }
 
 Status TritonAutotuner::WriteAutotuneResults(AutotuneResults* results) {
-  // TODO(anlunx): Remove duplication with gpu_conv_algorithm_picker.
   absl::MutexLock lock(&autotune_cache_mu);
-
-  for (const auto& [k, result] : autotune_cache) {
-    const auto& [model_str, hlo] = k;
-    auto& entry = *results->add_dots();
-    entry.set_device(model_str);
-    entry.set_hlo(hlo);
-    *entry.mutable_result() = result;
-  }
-
-  // Sort the results so that they're deterministic.
-  std::sort(results->mutable_dots()->pointer_begin(),
-            results->mutable_dots()->pointer_end(),
-            [](const auto* a, const auto* b) {
-              return std::make_pair(absl::string_view(a->device()),
-                                    absl::string_view(a->hlo())) <
-                     std::make_pair(absl::string_view(b->device()),
-                                    absl::string_view(b->hlo()));
-            });
-  return OkStatus();
+  return SerializeAutotuneResults(autotune_cache, results);
 }
 
 Status TritonAutotuner::LoadAutotuneResults(const AutotuneResults& results) {
   absl::MutexLock lock(&autotune_cache_mu);
-  for (const auto& result : results.convs()) {
-    autotune_cache[std::make_tuple(result.device(), result.hlo())] =
-        result.result();
-  }
-  return OkStatus();
+  return ::xla::gpu::LoadAutotuneResults(autotune_cache, results);
 }
 
 void TritonAutotuner::ClearAutotuneResults() {

@@ -180,8 +180,8 @@ class GpuCompiler : public LLVMCompiler {
 
  protected:
   // During compilation with device, stream_exec != null and autotune_results
-  // == null. During deviceless AOT compilation, stream_exec == null and
-  // autotune_results != null.
+  // can be null or not null. During deviceless AOT compilation, stream_exec ==
+  // null and autotune_results != null.
   virtual Status OptimizeHloPostLayoutAssignment(
       HloModule* hlo_module, se::StreamExecutor* stream_exec,
       const CompileOptions& options, const GpuTargetConfig& gpu_target_config,

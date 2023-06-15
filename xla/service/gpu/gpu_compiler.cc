@@ -30,6 +30,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/variant.h"
 #include "llvm/AsmParser/Parser.h"
@@ -43,6 +44,7 @@ limitations under the License.
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/Diagnostics.h"  // from @llvm-project
+#include "xla/autotune_serialize.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -931,7 +933,7 @@ Status GpuCompiler::OptimizeHloPostLayoutAssignment(
         RequiresCollectiveScheduleLinearizer);
   }
 
-  if (autotune_config.is_offline()) {
+  if (autotune_results != nullptr) {
     GpuConvAlgorithmPicker::ClearAutotuneResults();
     TF_RETURN_IF_ERROR(
         GpuConvAlgorithmPicker::LoadAutotuneResults(*autotune_results));
@@ -1005,9 +1007,64 @@ Status GpuCompiler::OptimizeHloPostLayoutAssignment(
   return OkStatus();
 }
 
+namespace {
+
+StatusOr<std::optional<AutotuneResults>> LoadAutotuneResultsIfEnabled(
+    const DebugOptions& debug_options) {
+  std::optional<AutotuneResults> autotune_results;
+  if (std::string file_path =
+          debug_options.xla_gpu_load_autotune_results_from();
+      !file_path.empty()) {
+    if (!tsl::Env::Default()->FileExists(file_path).ok()) {
+      return FailedPrecondition("AutotuneResults file does not exist: %s",
+                                file_path.c_str());
+    }
+    std::string autotune_results_str;
+    TF_RETURN_IF_ERROR(tsl::ReadFileToString(tsl::Env::Default(), file_path,
+                                             &autotune_results_str));
+
+    bool parse_success = false;
+    if (absl::EndsWith(file_path, ".txt") ||
+        absl::EndsWith(file_path, ".textproto")) {
+      parse_success = tsl::protobuf::TextFormat::ParseFromString(
+          autotune_results_str, &autotune_results.emplace());
+    } else {
+      parse_success =
+          autotune_results.emplace().ParseFromString(autotune_results_str);
+    }
+    if (!parse_success) {
+      return FailedPrecondition("Failed to parse AutotuneResults");
+    }
+    VLOG(3) << "AutotuneResults read from file: " << file_path;
+  }
+  return autotune_results;
+}
+
+Status DumpAutotuneResultsIfEnabled(const DebugOptions& debug_options) {
+  if (std::string file_path = debug_options.xla_gpu_dump_autotune_results_to();
+      !file_path.empty()) {
+    std::string autotune_results_str;
+    TF_ASSIGN_OR_RETURN(
+        autotune_results_str,
+        xla::SerializeAutotuneResults(
+            /*as_textproto=*/(absl::EndsWith(file_path, ".txt") ||
+                              absl::EndsWith(file_path, ".textproto"))));
+    TF_RETURN_IF_ERROR(tsl::WriteStringToFile(tsl::Env::Default(), file_path,
+                                              autotune_results_str));
+    VLOG(3) << "Autotune results written to file: " << file_path;
+  }
+  return OkStatus();
+}
+
+}  // namespace
+
 StatusOr<std::unique_ptr<HloModule>> GpuCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
+  const DebugOptions& debug_options = module->config().debug_options();
+  TF_ASSIGN_OR_RETURN(std::optional<AutotuneResults> autotune_results,
+                      LoadAutotuneResultsIfEnabled(debug_options));
+
   // We dump the post-optimization HLO in RunBackend so no need to dump it here.
   XLA_SCOPED_LOGGING_TIMER(
       absl::StrCat("GpuCompiler::RunHloPasses for ", module->name()));
@@ -1017,9 +1074,9 @@ StatusOr<std::unique_ptr<HloModule>> GpuCompiler::RunHloPasses(
       tsl::profiler::TraceMeLevel::kInfo);
 
   GpuTargetConfig gpu_target_config = GetGpuTargetConfig(stream_exec);
-  TF_RETURN_IF_ERROR(OptimizeHloModule(module.get(), stream_exec, options,
-                                       gpu_target_config,
-                                       /*autotune_results=*/nullptr));
+  TF_RETURN_IF_ERROR(OptimizeHloModule(
+      module.get(), stream_exec, options, gpu_target_config,
+      autotune_results.has_value() ? &autotune_results.value() : nullptr));
 
   TF_RETURN_IF_ERROR(PrepareHloModuleForIrEmitting(module.get()));
 
@@ -1028,6 +1085,8 @@ StatusOr<std::unique_ptr<HloModule>> GpuCompiler::RunHloPasses(
   // This won't record values for calls that error out (because if they error
   // out we have no way of telling how far through the process we got).
   RecordHloPassesDuration(end_usecs - start_usecs);
+
+  TF_RETURN_IF_ERROR(DumpAutotuneResultsIfEnabled(debug_options));
 
   return std::move(module);
 }
