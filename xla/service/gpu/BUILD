@@ -1170,17 +1170,15 @@ xla_cc_test(
     srcs = ["gemm_rewriter_triton_test.cc"],
     deps = [
         ":gemm_rewriter_triton",
+        "//xla:shape_util",
         "//xla/hlo/ir:hlo",
-        "//xla/service:pattern_matcher",
         "//xla/service:pattern_matcher_gmock",
         "//xla/stream_executor:device_description",
         "//xla/tests:hlo_test_base",
-        "//xla/tests:test_utils",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
         "@tsl//tsl/lib/core:status_test_util",
         "@tsl//tsl/platform:errors",
         "@tsl//tsl/platform:status_matchers",
-        "@tsl//tsl/platform:test",
     ],
 )
 
