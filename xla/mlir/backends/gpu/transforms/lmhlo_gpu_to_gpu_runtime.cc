@@ -578,6 +578,7 @@ class NormOpLowering : public OpRewritePattern<CudnnNormOp> {
     }
     call->setAttr(b.getStringAttr("operand_layouts"),
                   b.getI64TensorAttr(values));
+    call->setAttr(b.getStringAttr("kind"), op.getKindAttr());
 
     // Erase the original norm operation.
     rewriter.eraseOp(op);

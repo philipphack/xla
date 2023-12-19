@@ -753,6 +753,20 @@ tsl::StatusOr<lmhlo_gpu::CublasLtMatmulEpilogue> AsLhloEpilogue(
   }
 }
 
+tsl::StatusOr<lmhlo_gpu::CudnnNormKind> AsLhloNormKind(
+    xla::gpu::CudnnNormBackendConfig_Kind kind) {
+  switch (kind) {
+    case xla::gpu::CudnnNormBackendConfig::LAYER_FWD_INFER:
+      return lmhlo_gpu::CudnnNormKind::LayerFwdInfer;
+    case xla::gpu::CudnnNormBackendConfig::LAYER_FWD_TRAIN:
+      return lmhlo_gpu::CudnnNormKind::LayerFwdTrain;
+    case xla::gpu::CudnnNormBackendConfig::LAYER_BWD:
+      return lmhlo_gpu::CudnnNormKind::LayerBwd;
+    default:
+      return xla::InternalError("Unknown norm mode.");
+  }
+}
+
 tsl::StatusOr<lmhlo_gpu::FusedMhaDagSignature> AsLhloFusedMhaDagSignature(
     xla::gpu::CudnnfMHAKind kind) {
   switch (kind) {
@@ -1186,11 +1200,45 @@ tsl::StatusOr<Operation*> LhloDialectEmitter::EmitDnnNorm(
       auto const backend_config,
       custom_call->backend_config<xla::gpu::CudnnNormBackendConfig>());
 
-  llvm::SmallVector<Value, 7> operands;
-  TF_RETURN_IF_ERROR(GetOrCreateView(custom_call->operand(0), &operands));
-  TF_RETURN_IF_ERROR(GetOrCreateView(custom_call->operand(1), &operands));
-  TF_RETURN_IF_ERROR(GetOrCreateView(custom_call->operand(2), &operands));
-  TF_RETURN_IF_ERROR(GetOrCreateView(custom_call, &operands));
+  bool has_bias = backend_config.kind() ==
+                      xla::gpu::CudnnNormBackendConfig::LAYER_FWD_INFER ||
+                  backend_config.kind() ==
+                      xla::gpu::CudnnNormBackendConfig::LAYER_FWD_TRAIN;
+  bool has_expectation =
+      backend_config.kind() ==
+          xla::gpu::CudnnNormBackendConfig::LAYER_FWD_TRAIN ||
+      backend_config.kind() == xla::gpu::CudnnNormBackendConfig::LAYER_BWD;
+  bool has_dscale =
+      backend_config.kind() == xla::gpu::CudnnNormBackendConfig::LAYER_BWD;
+
+  llvm::SmallVector<Value, 9> operands;
+  TF_RETURN_IF_ERROR(
+      GetOrCreateView(custom_call->operand(0), &operands));  // input
+  TF_RETURN_IF_ERROR(
+      GetOrCreateView(custom_call->operand(1), &operands));          // scale
+  TF_RETURN_IF_ERROR(GetOrCreateView(custom_call, &operands, {0}));  // output
+  TF_RETURN_IF_ERROR(GetOrCreateView(
+      custom_call->operand(2),
+      &operands));  // bias or dy (in all cases, there's excactly one of them)
+
+  if (backend_config.kind() ==
+      xla::gpu::CudnnNormBackendConfig::LAYER_FWD_TRAIN) {
+    TF_RETURN_IF_ERROR(
+        GetOrCreateView(custom_call, &operands, {1}));  // expectation
+    TF_RETURN_IF_ERROR(
+        GetOrCreateView(custom_call, &operands, {2}));  // norm factor
+  }
+  if (backend_config.kind() == xla::gpu::CudnnNormBackendConfig::LAYER_BWD) {
+    TF_RETURN_IF_ERROR(
+        GetOrCreateView(custom_call->operand(3), &operands));  // expectation
+    TF_RETURN_IF_ERROR(
+        GetOrCreateView(custom_call->operand(4), &operands));  // norm factor
+    TF_RETURN_IF_ERROR(GetOrCreateView(custom_call, &operands, {1}));  // dscale
+    TF_RETURN_IF_ERROR(GetOrCreateView(custom_call, &operands, {2}));  // dbias
+  }
+  TF_RETURN_IF_ERROR(GetOrCreateView(
+      custom_call, &operands,
+      {custom_call->shape().tuple_shapes_size() - 1}));  // scratch space
 
   auto norm =
       CreateOpWithoutAttrs<lmhlo_gpu::CudnnNormOp>(custom_call, operands);
@@ -1201,6 +1249,11 @@ tsl::StatusOr<Operation*> LhloDialectEmitter::EmitDnnNorm(
       builder_.getContext(), algorithm.algo_id(),
       algorithm.has_workspace_size() ? algorithm.workspace_size().value() : -1);
   norm.setAlgorithmConfigAttr(norm_algo_config);
+
+  TF_ASSIGN_OR_RETURN(lmhlo_gpu::CudnnNormKind kind,
+                      AsLhloNormKind(backend_config.kind()));
+  norm.setKindAttr(
+      lmhlo_gpu::CudnnNormKindAttr::get(builder_.getContext(), kind));
 
   std::vector<int64_t> operand_minor_to_major;
 
@@ -1224,8 +1277,16 @@ tsl::StatusOr<Operation*> LhloDialectEmitter::EmitDnnNorm(
   norm.setOperandLayoutsAttr(builder_.getI64ArrayAttr(llvm::ArrayRef<int64_t>{
       operand_minor_to_major.data(), operand_minor_to_major.size()}));
 
-  bool has_aux_outputs = custom_call->shape().tuple_shapes_size() == 4;
-  int32_t operand_sizes[] = {1, 1, 1, 1, has_aux_outputs, has_aux_outputs, 1};
+  int32_t operand_sizes[] = {1,
+                             1,
+                             1,
+                             has_bias,
+                             has_dscale,
+                             has_expectation,
+                             has_expectation,
+                             has_dscale,
+                             has_dscale,
+                             1};
   norm->setAttr(norm.getOperandSegmentSizeAttr(),
                 builder_.getDenseI32ArrayAttr(operand_sizes));
 

@@ -102,6 +102,8 @@ void InitializeBuffer(se::Stream* stream, PrimitiveType buffer_type,
 StatusOr<se::dnn::ConvolutionKind> GetDNNConvKindFromCudnnConvKind(
     CudnnConvKind kind);
 
+StatusOr<se::dnn::NormKind> GetDNNNormKindFromCudnnNormKind(CudnnNormKind kind);
+
 StatusOr<se::dnn::FusedMHAKind> GetDNNFusedMHAKindFromCudnnfMHAKind(
     CudnnfMHAKind kind);
 

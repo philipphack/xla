@@ -51,6 +51,26 @@ struct NormAlgorithmConfig {
   int64_t workspace_size;
 };
 
+static CudnnNormKind EncodeNormKind(lmhlo_gpu::CudnnNormKind signature) {
+  switch (signature) {
+    case lmhlo_gpu::CudnnNormKind::LayerFwdInfer:
+      return CudnnNormKind::kLayerForwardInfer;
+    case lmhlo_gpu::CudnnNormKind::LayerFwdTrain:
+      return CudnnNormKind::kLayerForwardTrain;
+    case lmhlo_gpu::CudnnNormKind::LayerBwd:
+      return CudnnNormKind::kLayerBackward;
+  }
+}
+
+void PopulateNormKindAttrEncoding(
+    runtime::CustomCallAttrEncodingSet& encoding) {
+  {  // --- Encode `lmhlo_gpu::CudnnNormKindAttr`.
+    encoding.Add<
+        EnumAttrEncoding<lmhlo_gpu::CudnnNormKindAttr, lmhlo_gpu::CudnnNormKind,
+                         xla::gpu::CudnnNormKind>>(EncodeNormKind);
+  }
+}
+
 void PopulateNormAlgorithmConfigAttrEncoding(
     runtime::CustomCallAttrEncodingSet& encoding) {
   {  // --- Encode `lmhlo_gpu::NormAlgorithmConfigAttr`.
@@ -65,6 +85,8 @@ void PopulateNormAlgorithmConfigAttrEncoding(
 }  // namespace gpu
 
 namespace runtime {
+XLA_RUNTIME_REGISTER_ENUM_ATTR_DECODING(xla::gpu::CudnnNormKind);
+
 XLA_RUNTIME_REGISTER_AGGREGATE_ATTR_DECODING(
     xla::gpu::NormAlgorithmConfig,  //
     AggregateMember<int64_t>("algorithm"),
@@ -76,14 +98,18 @@ namespace gpu {
 void RegisterNormTypeIdNames(runtime::TypeIDNameRegistry& registry) {
   registry.Register<Tagged<NormAlgorithmConfig>>(
       "__type_id_norm_algorithm_config");
+  registry.Register<Tagged<CudnnNormKind>>("__type_id_cudnn_norm_kind");
 }
 
 static GpuNormDescriptor GetGpuNormDescriptor(
-    StridedMemrefView input, StridedMemrefView scale, StridedMemrefView bias,
-    StridedMemrefView output, std::optional<StridedMemrefView> expectation,
-    std::optional<StridedMemrefView> norm_factor, double epsilon,
+    StridedMemrefView input, StridedMemrefView scale, StridedMemrefView output,
+    std::optional<StridedMemrefView> bias, std::optional<StridedMemrefView> dy,
+    std::optional<StridedMemrefView> expectation,
+    std::optional<StridedMemrefView> norm_factor,
+    std::optional<StridedMemrefView> dscale,
+    std::optional<StridedMemrefView> dbias, double epsilon,
     NormAlgorithmConfig algorithm_config,
-    absl::Span<const int64_t> operand_layouts) {
+    absl::Span<const int64_t> operand_layouts, CudnnNormKind kind) {
   GpuNormDescriptor descriptor;
 
   auto* algorithm = descriptor.backend_config.mutable_algorithm();
@@ -93,6 +119,7 @@ static GpuNormDescriptor GetGpuNormDescriptor(
     algorithm->mutable_workspace_size()->set_value(
         algorithm_config.workspace_size);
   }
+  descriptor.kind = kind;
 
   // Apply backend config layout to the shape.
   int layout_idx = 0;
@@ -109,13 +136,24 @@ static GpuNormDescriptor GetGpuNormDescriptor(
 
   descriptor.input_shape = apply_shape(input);
   descriptor.scale_shape = apply_shape(scale);
-  descriptor.bias_shape = apply_shape(bias);
   descriptor.output_shape = apply_shape(output);
+  if (bias) {
+    descriptor.bias_shape = apply_shape(bias.value());
+  }
+  if (dy) {
+    descriptor.dy_shape = apply_shape(dy.value());
+  }
   if (expectation) {
-    descriptor.expectation_shape = apply_shape(*expectation);
+    descriptor.expectation_shape = apply_shape(expectation.value());
   }
   if (norm_factor) {
-    descriptor.norm_factor_shape = apply_shape(*norm_factor);
+    descriptor.norm_factor_shape = apply_shape(norm_factor.value());
+  }
+  if (dscale) {
+    descriptor.dscale_shape = apply_shape(dscale.value());
+  }
+  if (dbias) {
+    descriptor.dbias_shape = apply_shape(dbias.value());
   }
 
   descriptor.backend_config.set_epsilon(epsilon);
@@ -123,34 +161,72 @@ static GpuNormDescriptor GetGpuNormDescriptor(
   return descriptor;
 }
 
-static absl::Status NormImpl(const ServiceExecutableRunOptions* run_options,
-                             const DebugOptions* debug_options,
-                             State<NormRunnerState> runner_state,
-                             StridedMemrefView input, StridedMemrefView scale,
-                             StridedMemrefView bias, StridedMemrefView output,
-                             CustomCall::RemainingArgs remaining_args,
-                             int64_t uid, double epsilon,
-                             absl::Span<const int64_t> operand_layouts,
-                             NormAlgorithmConfig algorithm_config) {
-  std::optional<StridedMemrefView> expectation, norm_factor;
+static absl::Status NormImpl(
+    const ServiceExecutableRunOptions* run_options,
+    const DebugOptions* debug_options, State<NormRunnerState> runner_state,
+    StridedMemrefView input, StridedMemrefView scale, StridedMemrefView output,
+    CustomCall::RemainingArgs remaining_args, int64_t uid, double epsilon,
+    absl::Span<const int64_t> operand_layouts,
+    NormAlgorithmConfig algorithm_config, CudnnNormKind kind) {
+  std::optional<StridedMemrefView> bias, expectation, norm_factor, dy, dscale,
+      dbias;
   // Final remaining arg is the scratch space.
-  if (remaining_args.size() == 3) {
-    auto expectation_ = remaining_args.get<StridedMemrefView>(0);
+  if (kind == CudnnNormKind::kLayerForwardInfer ||
+      kind == CudnnNormKind::kLayerForwardTrain) {
+    auto bias_ = remaining_args.get<StridedMemrefView>(0);
+    if (failed(bias_)) {
+      return absl::InternalError("Failure while retrieving bias.");
+    }
+    bias = bias_.value();
+  }
+  if (kind == CudnnNormKind::kLayerForwardTrain) {
+    auto expectation_ = remaining_args.get<StridedMemrefView>(1);
     if (failed(expectation_)) {
       return absl::InternalError("Failure while retrieving expectation.");
     }
     expectation = expectation_.value();
 
-    auto norm_factor_ = remaining_args.get<StridedMemrefView>(1);
+    auto norm_factor_ = remaining_args.get<StridedMemrefView>(2);
     if (failed(norm_factor_)) {
       return absl::InternalError("Failure while retrieving norm factor.");
     }
     norm_factor = norm_factor_.value();
   }
+  if (kind == CudnnNormKind::kLayerBackward) {
+    auto dy_ = remaining_args.get<StridedMemrefView>(0);
+    if (failed(dy_)) {
+      return absl::InternalError("Failure while retrieving dy.");
+    }
+    dy = dy_.value();
 
-  GpuNormDescriptor descriptor =
-      GetGpuNormDescriptor(input, scale, bias, output, expectation, norm_factor,
-                           epsilon, algorithm_config, operand_layouts);
+    auto expectation_ = remaining_args.get<StridedMemrefView>(1);
+    if (failed(expectation_)) {
+      return absl::InternalError("Failure while retrieving expectation.");
+    }
+    expectation = expectation_.value();
+
+    auto norm_factor_ = remaining_args.get<StridedMemrefView>(2);
+    if (failed(norm_factor_)) {
+      return absl::InternalError("Failure while retrieving norm factor.");
+    }
+    norm_factor = norm_factor_.value();
+
+    auto dscale_ = remaining_args.get<StridedMemrefView>(3);
+    if (failed(dscale_)) {
+      return absl::InternalError("Failure while retrieving dscale.");
+    }
+    dscale = dscale_.value();
+
+    auto dbias_ = remaining_args.get<StridedMemrefView>(4);
+    if (failed(dbias_)) {
+      return absl::InternalError("Failure while retrieving dbias.");
+    }
+    dbias = dbias_.value();
+  }
+
+  GpuNormDescriptor descriptor = GetGpuNormDescriptor(
+      input, scale, output, bias, dy, expectation, norm_factor, dscale, dbias,
+      epsilon, algorithm_config, operand_layouts, kind);
 
   auto config = GpuNormConfig::For(descriptor);
   if (!config.ok()) {
@@ -166,14 +242,26 @@ static absl::Status NormImpl(const ServiceExecutableRunOptions* run_options,
 
   se::DeviceMemoryBase input_buffer = GetDeviceAddress(input);
   se::DeviceMemoryBase scale_buffer = GetDeviceAddress(scale);
-  se::DeviceMemoryBase bias_buffer = GetDeviceAddress(bias);
   se::DeviceMemoryBase output_buffer = GetDeviceAddress(output);
-  std::optional<se::DeviceMemoryBase> expectation_buffer, norm_factor_buffer;
+  std::optional<se::DeviceMemoryBase> bias_buffer, dy_buffer,
+      expectation_buffer, norm_factor_buffer, dscale_buffer, dbias_buffer;
+  if (bias) {
+    bias_buffer = GetDeviceAddress(bias.value());
+  }
+  if (dy) {
+    dy_buffer = GetDeviceAddress(dy.value());
+  }
   if (expectation) {
     expectation_buffer = GetDeviceAddress(expectation.value());
   }
   if (norm_factor) {
     norm_factor_buffer = GetDeviceAddress(norm_factor.value());
+  }
+  if (dscale) {
+    dscale_buffer = GetDeviceAddress(dscale.value());
+  }
+  if (dbias) {
+    dbias_buffer = GetDeviceAddress(dbias.value());
   }
 
   auto scratch = remaining_args.get<FlatMemrefView>(remaining_args.size() - 1);
@@ -187,9 +275,10 @@ static absl::Status NormImpl(const ServiceExecutableRunOptions* run_options,
 
   // Run the norm.
   return RunGpuNorm(current_runner.value()->config, input_buffer, scale_buffer,
-                    bias_buffer, output_buffer, expectation_buffer,
-                    norm_factor_buffer, scratch_buffer, run_options->stream(),
-                    opts);
+                    output_buffer, bias_buffer, dy_buffer, expectation_buffer,
+                    norm_factor_buffer, dscale_buffer, dbias_buffer,
+                    scratch_buffer, run_options->stream(), opts);
+  return OkStatus();
 }
 
 template <typename... Ts>
@@ -199,7 +288,8 @@ auto BindNormAttributes(runtime::CustomCallBinding<Ts...> binding) {
       .template Attr<int64_t>("uid")
       .template Attr<double>("epsilon")
       .template Attr<absl::Span<const int64_t>>("operand_layouts")
-      .template Attr<NormAlgorithmConfig>("norm_algorithm_config");
+      .template Attr<NormAlgorithmConfig>("norm_algorithm_config")
+      .template Attr<CudnnNormKind>("kind");
 }
 
 auto NormCall(const char* name) {
@@ -209,7 +299,6 @@ auto NormCall(const char* name) {
       .State<NormRunnerState>("uid")
       .Arg<StridedMemrefView>()   // input
       .Arg<StridedMemrefView>()   // scale
-      .Arg<StridedMemrefView>()   // bias
       .Arg<StridedMemrefView>();  // output
 }
 

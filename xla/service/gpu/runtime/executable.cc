@@ -138,6 +138,7 @@ void RegisterXlaGpuAttrEncoding(CustomCallAttrEncodingSet& encoding) {
   PopulateFusedAttentionForwardDAGSignatureAttrEncoding(encoding);
   PopulateFusedAttentionBackwardDAGSignatureAttrEncoding(encoding);
   PopulateNormAlgorithmConfigAttrEncoding(encoding);
+  PopulateNormKindAttrEncoding(encoding);
 #endif  // GOOGLE_CUDA || TF_HIPBLASLT
 }
 

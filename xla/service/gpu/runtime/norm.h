@@ -34,6 +34,8 @@ void RegisterNormCustomCalls(runtime::DirectCustomCallRegistry& registry);
 // Register type names for norm attributes defined by MHLO dialect.
 void RegisterNormTypeIdNames(runtime::TypeIDNameRegistry& registry);
 
+void PopulateNormKindAttrEncoding(runtime::CustomCallAttrEncodingSet& encoding);
+
 void PopulateNormAlgorithmConfigAttrEncoding(
     runtime::CustomCallAttrEncodingSet& encoding);
 

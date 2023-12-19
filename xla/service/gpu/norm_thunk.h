@@ -39,9 +39,13 @@ class NormThunk : public Thunk {
  public:
   NormThunk(ThunkInfo thunk_info, GpuNormConfig config,
             BufferAllocation::Slice input, BufferAllocation::Slice scale,
-            BufferAllocation::Slice bias, BufferAllocation::Slice output,
+            std::optional<BufferAllocation::Slice> bias,
+            BufferAllocation::Slice output,
             std::optional<BufferAllocation::Slice> expectation,
             std::optional<BufferAllocation::Slice> norm_factor,
+            std::optional<BufferAllocation::Slice> dy,
+            std::optional<BufferAllocation::Slice> dscale,
+            std::optional<BufferAllocation::Slice> dbias,
             BufferAllocation::Slice scratch);
 
   NormThunk(const NormThunk&) = delete;
@@ -52,10 +56,13 @@ class NormThunk : public Thunk {
  private:
   BufferAllocation::Slice input_buffer_;
   BufferAllocation::Slice scale_buffer_;
-  BufferAllocation::Slice bias_buffer_;
+  std::optional<BufferAllocation::Slice> bias_buffer_;
   BufferAllocation::Slice output_buffer_;
   std::optional<BufferAllocation::Slice> expectation_buffer_;
   std::optional<BufferAllocation::Slice> norm_factor_buffer_;
+  std::optional<BufferAllocation::Slice> dy_buffer_;
+  std::optional<BufferAllocation::Slice> dscale_buffer_;
+  std::optional<BufferAllocation::Slice> dbias_buffer_;
   BufferAllocation::Slice scratch_buffer_;
   NormRunner& GetOrCreateRunner(const stream_executor::Stream*);
 

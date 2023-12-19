@@ -210,6 +210,20 @@ class UnreachableThunk : public Thunk {
   std::string error_message_;
 };
 
+StatusOr<xla::gpu::CudnnNormKind> AsCudnnNormKind(
+    mlir::lmhlo_gpu::CudnnNormKind kind) {
+  switch (kind) {
+    case mlir::lmhlo_gpu::CudnnNormKind::LayerFwdInfer:
+      return xla::gpu::CudnnNormKind::kLayerForwardInfer;
+    case mlir::lmhlo_gpu::CudnnNormKind::LayerFwdTrain:
+      return xla::gpu::CudnnNormKind::kLayerForwardTrain;
+    case mlir::lmhlo_gpu::CudnnNormKind::LayerBwd:
+      return xla::gpu::CudnnNormKind::kLayerBackward;
+    default:
+      return xla::InternalError("Unknown norm kind.");
+  }
+}
+
 StatusOr<xla::gpu::CudnnfMHAKind> AsCudnnfMHAKind(
     mlir::lmhlo_gpu::FusedMhaDagSignature signature) {
   switch (signature) {
@@ -1123,46 +1137,61 @@ Status IrEmitterUnnested::EmitNormThunk(mlir::Operation* op) {
                       GetAllocationSlice(norm.getInput()));
   TF_ASSIGN_OR_RETURN(BufferAllocation::Slice scale_slice,
                       GetAllocationSlice(norm.getScale()));
-  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice bias_slice,
-                      GetAllocationSlice(norm.getBias()));
   TF_ASSIGN_OR_RETURN(BufferAllocation::Slice output_slice,
                       GetAllocationSlice(norm.getOutput()));
 
-  int64_t num_operands = op->getNumOperands();
-  std::optional<BufferAllocation::Slice> expectation_slice, norm_factor_slice;
-  if (num_operands == 7) {
+  std::optional<BufferAllocation::Slice> bias_slice, expectation_slice,
+      norm_factor_slice, dy_slice, dscale_slice, dbias_slice;
+  if (norm.getBias()) {
+    TF_ASSIGN_OR_RETURN(bias_slice, GetAllocationSlice(norm.getBias()));
+  }
+  if (norm.getExpectation()) {
     TF_ASSIGN_OR_RETURN(expectation_slice,
                         GetAllocationSlice(norm.getExpectation()));
     TF_ASSIGN_OR_RETURN(norm_factor_slice,
                         GetAllocationSlice(norm.getNormFactor()));
+  }
+  if (norm.getDscale()) {
+    TF_ASSIGN_OR_RETURN(dy_slice, GetAllocationSlice(norm.getDy()));
+    TF_ASSIGN_OR_RETURN(dscale_slice, GetAllocationSlice(norm.getDscale()));
+    TF_ASSIGN_OR_RETURN(dbias_slice, GetAllocationSlice(norm.getDbias()));
   }
 
   TF_ASSIGN_OR_RETURN(BufferAllocation::Slice scratch_slice,
                       GetAllocationSlice(norm.getScratch()));
 
   GpuNormDescriptor descriptor;
+  descriptor.backend_config.set_epsilon(norm.getEpsilon().convertToDouble());
+  TF_ASSIGN_OR_RETURN(auto kind, AsCudnnNormKind(norm.getKind()));
+  descriptor.kind = kind;
   auto* algorithm = descriptor.backend_config.mutable_algorithm();
   algorithm->set_algo_id(norm.getAlgorithmConfig().getAlgorithm());
   algorithm->set_is_cudnn_frontend(true);
   auto workspace_size = norm.getAlgorithmConfig().getWorkspaceSize();
   algorithm->mutable_workspace_size()->set_value(workspace_size);
 
-  descriptor.input_shape = GetShape(norm->getOperand(0));
-  descriptor.scale_shape = GetShape(norm->getOperand(1));
-  descriptor.bias_shape = GetShape(norm->getOperand(2));
-  descriptor.output_shape = GetShape(norm->getOperand(3));
-  if (num_operands == 7) {
-    descriptor.expectation_shape = GetShape(norm->getOperand(4));
-    descriptor.norm_factor_shape = GetShape(norm->getOperand(5));
+  descriptor.input_shape = GetShape(norm.getInput());
+  descriptor.scale_shape = GetShape(norm.getScale());
+  descriptor.output_shape = GetShape(norm.getOutput());
+  if (norm.getBias()) {
+    descriptor.bias_shape = GetShape(norm.getBias());
   }
-  descriptor.backend_config.set_epsilon(norm.getEpsilon().convertToDouble());
+  if (norm.getExpectation()) {
+    descriptor.expectation_shape = GetShape(norm.getExpectation());
+    descriptor.norm_factor_shape = GetShape(norm.getNormFactor());
+  }
+  if (norm.getDscale()) {
+    descriptor.dy_shape = GetShape(norm.getDy());
+    descriptor.dscale_shape = GetShape(norm.getDscale());
+    descriptor.dbias_shape = GetShape(norm.getDbias());
+  }
 
   TF_ASSIGN_OR_RETURN(GpuNormConfig config, GpuNormConfig::For(descriptor));
 
   auto thunk = std::make_unique<NormThunk>(
       Thunk::ThunkInfo::WithProfileAnnotation(op), std::move(config),
       input_slice, scale_slice, bias_slice, output_slice, expectation_slice,
-      norm_factor_slice, scratch_slice);
+      norm_factor_slice, dy_slice, dscale_slice, dbias_slice, scratch_slice);
 
   AddThunkToThunkSequence(std::move(thunk));
 
