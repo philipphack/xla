@@ -192,6 +192,7 @@ message CudnnNormBackendConfig {
     LAYER_FWD_INFER = 0;
     LAYER_FWD_TRAIN = 1;
     LAYER_BWD = 2;
+    RMS_FWD_INFER = 3;
   }
   Kind kind = 3;
 }

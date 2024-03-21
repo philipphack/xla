@@ -525,6 +525,8 @@ absl::StatusOr<se::dnn::NormKind> GetDNNNormKindFromCudnnNormKind(
       return se::dnn::LAYER_FWD_TRAIN;
     case CudnnNormKind::kLayerBackward:
       return se::dnn::LAYER_BWD;
+    case CudnnNormKind::kRMSForwardInfer:
+      return se::dnn::RMS_FWD_INFER;
     default:
       return Internal("Unexpected norm kind");
   }

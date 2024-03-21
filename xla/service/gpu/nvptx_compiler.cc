@@ -52,6 +52,7 @@ limitations under the License.
 #include "xla/service/gpu/autotuner_util.h"
 #include "xla/service/gpu/buffer_sharing.h"
 #include "xla/service/gpu/conv_algorithm_picker.h"
+#include "xla/service/gpu/conv_layout_normalization.h"
 #include "xla/service/gpu/cublas_pad_for_gemms.h"
 #include "xla/service/gpu/cublas_padding_requirements.h"
 #include "xla/service/gpu/cudnn_fused_conv_rewriter.h"
@@ -268,6 +269,7 @@ absl::Status NVPTXCompiler::OptimizeHloPostLayoutAssignment(
 
   HloPassPipeline pre_pipeline("nvptx post-layout_assignment part 1");
   if (hlo_module->config().debug_options().xla_gpu_enable_cudnn_layer_norm()) {
+    // pre_pipeline.AddPass<LayoutNormalization>(&NormalizeLayoutForGpuCustomCalls);
     // Rewrite normalization patterns into cuDNN Custom Calls.
     pre_pipeline.AddPass<CudnnNormRewriter>(cuda_compute_capability);
   }

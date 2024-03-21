@@ -38,20 +38,6 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-inline absl::StatusOr<xla::gpu::CudnnNormKind> AsCudnnNormKind(
-    xla::gpu::CudnnNormBackendConfig_Kind kind) {
-  switch (kind) {
-    case xla::gpu::CudnnNormBackendConfig::LAYER_FWD_INFER:
-      return xla::gpu::CudnnNormKind::kLayerForwardInfer;
-    case xla::gpu::CudnnNormBackendConfig::LAYER_FWD_TRAIN:
-      return xla::gpu::CudnnNormKind::kLayerForwardTrain;
-    case xla::gpu::CudnnNormBackendConfig::LAYER_BWD:
-      return xla::gpu::CudnnNormKind::kLayerBackward;
-    default:
-      return xla::Internal("Unknown norm kind.");
-  }
-}
-
 // Intermediate structure used as input to construct GpuNormConfig.
 struct GpuNormDescriptor {
   CudnnNormBackendConfig backend_config;
@@ -69,6 +55,22 @@ struct GpuNormDescriptor {
 
 // Structure to describe static properties of a fused norm op.
 struct GpuNormConfig {
+  static absl::StatusOr<xla::gpu::CudnnNormKind> AsCudnnNormKind(
+      xla::gpu::CudnnNormBackendConfig_Kind kind) {
+    switch (kind) {
+      case xla::gpu::CudnnNormBackendConfig::LAYER_FWD_INFER:
+        return xla::gpu::CudnnNormKind::kLayerForwardInfer;
+      case xla::gpu::CudnnNormBackendConfig::LAYER_FWD_TRAIN:
+        return xla::gpu::CudnnNormKind::kLayerForwardTrain;
+      case xla::gpu::CudnnNormBackendConfig::LAYER_BWD:
+        return xla::gpu::CudnnNormKind::kLayerBackward;
+      case xla::gpu::CudnnNormBackendConfig::RMS_FWD_INFER:
+        return xla::gpu::CudnnNormKind::kRMSForwardInfer;
+      default:
+        return xla::Internal("Unknown norm kind.");
+    }
+  }
+
   static absl::StatusOr<GpuNormConfig> For(const GpuNormDescriptor& desc) {
     std::vector<PrimitiveType> y_or_dx_types;
 

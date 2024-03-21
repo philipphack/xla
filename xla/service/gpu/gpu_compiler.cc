@@ -1376,9 +1376,11 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     pipeline.AddPass<TransposeFolding>(CanFoldTransposeOperandIntoDot,
                                        TransposeFolding::NeverFoldTranspose);
 
+    pipeline.AddPass<ReshapeDecomposer>();
     pipeline.AddPass<ReduceDecomposer>([&](const HloInstruction* r) {
       return IsReductionFromOrToContiguousDimensions(*r);
     });
+    pipeline.AddPass<HloPassFix<MoveCopyToUsers>>();
 
     // Greedy pattern matching for custom kernel fusions. We run it before
     // Triton rewriter or a regular Gemm rewriter to be able to match compatible
@@ -1411,6 +1413,10 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     // Rewrite GEMMs with broadcasted inputs as strided GEMMs.
     pipeline.AddPass<GemmBroadcastFoldingRewriter>();
 
+    if (debug_options.xla_gpu_normalize_layouts()) {
+      pipeline.AddPass<LayoutNormalization>(&NormalizeLayoutForGpuCustomCalls);
+      pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(simplifier_options);
+    }
     pipeline.AddPass<BroadcastCanonicalizer>();
 
     pipeline.AddPass<ReductionDegenerateDimRemover>();

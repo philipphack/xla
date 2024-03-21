@@ -116,6 +116,7 @@ TEST_F(CudnnNormRewriterTest, LayerNorm2D1) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_INFER"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[2,4,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:  ROOT [[GTE_BITCAST:%[^ ]+]] = f32[2,4]{1,0} bitcast([[GTE]])
@@ -185,6 +186,7 @@ TEST_F(CudnnNormRewriterTest, LayerNorm4D3) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_INFER"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[48,8,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:  ROOT [[GTE_BITCAST:%[^ ]+]] = f32[2,4,6,8]{3,2,1,0} bitcast([[GTE]])
@@ -324,6 +326,7 @@ TEST_F(CudnnNormRewriterTest, LayerNorm4D2) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_INFER"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[64,6,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:  ROOT [[FUSION:%[^ ]+]] = f32[2,4,6,8]{3,2,1,0} fusion([[GTE]]), kind=kLoop, calls=[[FUSED_COMPUTATION:%[^ ]+]]
@@ -464,6 +467,7 @@ TEST_F(CudnnNormRewriterTest, LayerNorm4D12) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_INFER"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[16,4,6,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:  ROOT  [[FUSION:%[^ ]+]] = f32[2,4,6,8]{3,2,1,0} fusion([[GTE]]), kind=kLoop, calls=[[FUSED_COMPUTATION:%[^ ]+]]
@@ -662,6 +666,7 @@ TEST_F(CudnnNormRewriterTest, LayerNormTrain2D1) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_TRAIN"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE0:%[^ ]+]] = f32[2,4,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:    [[GTE0_BITCAST:%[^ ]+]] = f32[2,4]{1,0} bitcast([[GTE0]])
@@ -739,6 +744,7 @@ TEST_F(CudnnNormRewriterTest, LayerNormTrain4D3) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_TRAIN"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE0:%[^ ]+]] = f32[48,8,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:    [[GTE0_BITCAST:%[^ ]+]] = f32[2,4,6,8]{3,2,1,0} bitcast([[GTE0]])
@@ -817,6 +823,7 @@ TEST_F(CudnnNormRewriterTest, LayerNormTrain4D12) {
 ; CHECK:           custom_call_target="__cudnn$norm",
 ; CHECK:           backend_config={
 ; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"LAYER_FWD_TRAIN"
 ; CHECK:           }
 ; CHECK-NEXT:    [[GTE0:%[^ ]+]] = f32[16,4,6,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
 ; CHECK-NEXT:    [[FUSION0:%[^ ]+]] = f32[2,4,6,8]{3,2,1,0} fusion([[GTE0]]), kind=kLoop, calls=[[FUSED_COMPUTATION0:%[^ ]+]]
@@ -1726,6 +1733,301 @@ TEST_F(CudnnNormRewriterTest, LayerNormTrainBackward4D1DoutputReshapeCombine) {
 ; CHECK-DAG:     [[GTE5:%[^ ]+]] = f32[4,1,1,1]{3,2,1,0} get-tuple-element([[CC1]]), index=2
 ; CHECK-DAG:     [[GTE5_BITCAST:%[^ ]+]] = f32[4]{0} bitcast([[GTE5]])
 ; CHECK-DAG:  ROOT [[OUT:%[^ ]+]] = (f32[2,4,6,8]{3,2,1,0}, f32[2,4,6,8]{3,2,1,0}, f32[4]{0}, f32[4]{0}) tuple([[GTEF1]], [[GTEF2]], [[GTE4_BITCAST]], [[GTE5_BITCAST]])
+  )";
+
+  TestNorm(hlo_text, optimized_hlo);
+}
+
+// The following tests evaluate RMSNormXDY configurations, with X the rank of
+// the input and Y the dimensions that are normalized.
+TEST_F(CudnnNormRewriterTest, RMSNorm2D1) {
+#if (CUDA_VERSION < 12000 || CUDNN_VERSION < 8905)
+  GTEST_SKIP() << "RMS norm kernels require CUDA 12 and cuDNN 8.9.5.";
+#endif
+  if (!(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::AMPERE) &&
+      !(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::HOPPER)) {
+    GTEST_SKIP() << "RMS norm kernels require Ampere or Hopper architectures.";
+  }
+  const char* hlo_text = R"(
+    HloModule test
+
+    apply {
+      a = f32[] parameter(0)
+      b = f32[] parameter(1)
+      ROOT c = f32[] add(a,b)
+    }
+
+    ENTRY test {
+        input = f32[16,32] parameter(0)
+        input_square = f32[16,32] multiply(input, input)
+        c0 = f32[] constant(0)
+        input_square_sum = f32[16] reduce(input_square, c0), dimensions={1}, to_apply=apply
+        r_nelems = f32[] constant(0.03125)
+        r_nelems_bcast = f32[16] broadcast(r_nelems), dimensions={}
+        input_square_mean = f32[16] multiply(input_square_sum, r_nelems_bcast)
+        epsilon = f32[] constant(0.001)
+        epsilon_bcast = f32[16] broadcast(epsilon), dimensions={}
+        input_squre_mean_plus_epsilon = f32[16] add(input_square_mean, epsilon_bcast)
+        norm_factor = f32[16] rsqrt(input_squre_mean_plus_epsilon)
+        norm_factor_bcast = f32[16,32] broadcast(norm_factor), dimensions={0}
+        norm = f32[16,32] multiply(norm_factor_bcast, input)
+        scale = f32[32] parameter(1)
+        scale_bcast = f32[16,32] broadcast(scale), dimensions={1}
+        ROOT out = f32[16,32] multiply(norm, scale_bcast)
+    })";
+
+  const char* optimized_hlo = R"(
+
+; CHECK-LABEL: ENTRY %test ({{.*}}: f32[16,32], {{.*}}: f32[32]) -> f32[16,32] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = f32[16,32]{1,0} parameter(0)
+; CHECK-NEXT:    [[P0_BITCAST:%[^ ]+]] = f32[16,32,1,1]{3,2,1,0} bitcast([[P0]])
+; CHECK-NEXT:    [[P1:%[^ ]+]] = f32[32]{0} parameter(1)
+; CHECK-NEXT:    [[P1_BITCAST:%[^ ]+]] = f32[32,1,1,1]{3,2,1,0} bitcast([[P1]])
+; CHECK-NEXT:    [[CC:%[^ ]+]] = (f32[16,32,1,1]{3,2,1,0}, u8[{{.*}}]{0}) custom-call([[P0_BITCAST]], [[P1_BITCAST]]),
+; CHECK:           custom_call_target="__cudnn$norm",
+; CHECK:           backend_config={
+; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"RMS_FWD_INFER"
+; CHECK:           }
+; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[16,32,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
+; CHECK-NEXT:  ROOT [[GTE_BITCAST:%[^ ]+]] = f32[16,32]{1,0} bitcast([[GTE]])
+  )";
+
+  TestNorm(hlo_text, optimized_hlo);
+}
+
+TEST_F(CudnnNormRewriterTest, RMSNorm4D3) {
+#if (CUDA_VERSION < 12000 || CUDNN_VERSION < 8905)
+  GTEST_SKIP() << "RMS norm kernels require CUDA 12 and cuDNN 8.9.5.";
+#endif
+  if (!(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::AMPERE) &&
+      !(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::HOPPER)) {
+    GTEST_SKIP() << "RMS norm kernels require Ampere or Hopper architectures.";
+  }
+  const char* hlo_text = R"(
+    HloModule test
+
+    apply {
+      a = f32[] parameter(0)
+      b = f32[] parameter(1)
+      ROOT c = f32[] add(a,b)
+    }
+
+    ENTRY test {
+        input = f32[2,4,6,32] parameter(0)
+        input_square = f32[2,4,6,32] multiply(input, input)
+        c0 = f32[] constant(0)
+        input_square_sum = f32[2,4,6] reduce(input_square, c0), dimensions={3}, to_apply=apply
+        r_nelems = f32[] constant(0.03125)
+        r_nelems_bcast = f32[2,4,6] broadcast(r_nelems), dimensions={}
+        input_square_mean = f32[2,4,6] multiply(input_square_sum, r_nelems_bcast)
+        epsilon = f32[] constant(0.001)
+        epsilon_bcast = f32[2,4,6] broadcast(epsilon), dimensions={}
+        input_squre_mean_plus_epsilon = f32[2,4,6] add(input_square_mean, epsilon_bcast)
+        norm_factor = f32[2,4,6] rsqrt(input_squre_mean_plus_epsilon)
+        norm_factor_bcast = f32[2,4,6,32] broadcast(norm_factor), dimensions={0,1,2}
+        norm = f32[2,4,6,32] multiply(norm_factor_bcast, input)
+        scale = f32[32] parameter(1)
+        scale_bcast = f32[2,4,6,32] broadcast(scale), dimensions={3}
+        ROOT out = f32[2,4,6,32] multiply(norm, scale_bcast)
+    })";
+
+  const char* optimized_hlo = R"(
+
+; CHECK-LABEL: ENTRY %test ({{.*}}: f32[2,4,6,32], {{.*}}: f32[32]) -> f32[2,4,6,32] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = f32[2,4,6,32]{3,2,1,0} parameter(0)
+; CHECK-NEXT:    [[P0_BITCAST:%[^ ]+]] = f32[48,32,1,1]{3,2,1,0} bitcast([[P0]])
+; CHECK-NEXT:    [[P1:%[^ ]+]] = f32[32]{0} parameter(1)
+; CHECK-NEXT:    [[P1_BITCAST:%[^ ]+]] = f32[32,1,1,1]{3,2,1,0} bitcast([[P1]])
+; CHECK-NEXT:    [[CC:%[^ ]+]] = (f32[48,32,1,1]{3,2,1,0}, u8[{{.*}}]{0}) custom-call([[P0_BITCAST]], [[P1_BITCAST]]),
+; CHECK:           custom_call_target="__cudnn$norm",
+; CHECK:           backend_config={
+; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"RMS_FWD_INFER"
+; CHECK:           }
+; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[48,32,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
+; CHECK-NEXT:  ROOT [[GTE_BITCAST:%[^ ]+]] = f32[2,4,6,32]{3,2,1,0} bitcast([[GTE]])
+  )";
+
+  TestNorm(hlo_text, optimized_hlo);
+}
+
+TEST_F(CudnnNormRewriterTest, RMSNorm4D2) {
+#if (CUDA_VERSION < 12000 || CUDNN_VERSION < 8905)
+  GTEST_SKIP() << "RMS norm kernels require CUDA 12 and cuDNN 8.9.5.";
+#endif
+  if (!(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::AMPERE) &&
+      !(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::HOPPER)) {
+    GTEST_SKIP() << "RMS norm kernels require Ampere or Hopper architectures.";
+  }
+  const char* hlo_text = R"(
+    HloModule test
+
+    apply {
+      a = f32[] parameter(0)
+      b = f32[] parameter(1)
+      ROOT c = f32[] add(a,b)
+    }
+
+    ENTRY test {
+        input = f32[2,4,64,8] parameter(0)
+        input_square = f32[2,4,64,8] multiply(input, input)
+        c0 = f32[] constant(0)
+        input_square_sum = f32[2,4,8] reduce(input_square, c0), dimensions={2}, to_apply=apply
+        r_nelems = f32[] constant(0.015625)
+        r_nelems_bcast = f32[2,4,8] broadcast(r_nelems), dimensions={}
+        input_square_mean = f32[2,4,8] multiply(input_square_sum, r_nelems_bcast)
+        epsilon = f32[] constant(0.001)
+        epsilon_bcast = f32[2,4,8] broadcast(epsilon), dimensions={}
+        input_squre_mean_plus_epsilon = f32[2,4,8] add(input_square_mean, epsilon_bcast)
+        norm_factor = f32[2,4,8] rsqrt(input_squre_mean_plus_epsilon)
+        norm_factor_bcast = f32[2,4,64,8] broadcast(norm_factor), dimensions={0,1,3}
+        norm = f32[2,4,64,8] multiply(norm_factor_bcast, input)
+        scale = f32[64] parameter(1)
+        scale_bcast = f32[2,4,64,8] broadcast(scale), dimensions={2}
+        ROOT out = f32[2,4,64,8] multiply(norm, scale_bcast)
+    })";
+
+  const char* optimized_hlo = R"(
+
+; CHECK-LABEL: ENTRY %test ({{.*}}: f32[2,4,64,8], {{.*}}: f32[64]) -> f32[2,4,64,8] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = f32[2,4,64,8]{3,2,1,0} parameter(0)
+; CHECK-NEXT:    [[TRANSPOSE:%[^ ]+]] = f32[2,4,8,64]{3,2,1,0} transpose([[P0]]), dimensions={0,1,3,2}
+; CHECK-NEXT:    [[P0_BITCAST:%[^ ]+]] = f32[64,64,1,1]{3,2,1,0} bitcast([[TRANSPOSE]])
+; CHECK-NEXT:    [[P1:%[^ ]+]] = f32[64]{0} parameter(1)
+; CHECK-NEXT:    [[P1_BITCAST:%[^ ]+]] = f32[64,1,1,1]{3,2,1,0} bitcast([[P1]])
+; CHECK-NEXT:    [[CC:%[^ ]+]] = (f32[64,64,1,1]{3,2,1,0}, u8[{{.*}}]{0}) custom-call([[P0_BITCAST]], [[P1_BITCAST]]),
+; CHECK:           custom_call_target="__cudnn$norm",
+; CHECK:           backend_config={
+; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"RMS_FWD_INFER"
+; CHECK:           }
+; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[64,64,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
+; CHECK-NEXT:  ROOT [[FUSION:%[^ ]+]] = f32[2,4,64,8]{3,2,1,0} fusion([[GTE]]), kind=kLoop, calls=[[FUSED_COMPUTATION:%[^ ]+]]
+  )";
+
+  TestNorm(hlo_text, optimized_hlo);
+}
+
+TEST_F(CudnnNormRewriterTest, RMSNorm4D12) {
+#if (CUDA_VERSION < 12000 || CUDNN_VERSION < 8905)
+  GTEST_SKIP() << "RMS norm kernels require CUDA 12 and cuDNN 8.9.5.";
+#endif
+  if (!(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::AMPERE) &&
+      !(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::HOPPER)) {
+    GTEST_SKIP() << "RMS norm kernels require Ampere or Hopper architectures.";
+  }
+  const char* hlo_text = R"(
+    HloModule test
+
+    apply {
+      a = f32[] parameter(0)
+      b = f32[] parameter(1)
+      ROOT c = f32[] add(a,b)
+    }
+
+    ENTRY test {
+        input = f32[2,32,6,8] parameter(0)
+        input_square = f32[2,32,6,8] multiply(input, input)
+        c0 = f32[] constant(0)
+        input_square_sum = f32[2,8] reduce(input_square, c0), dimensions={1,2}, to_apply=apply
+        r_nelems = f32[] constant(0.0052)
+        r_nelems_bcast = f32[2,8] broadcast(r_nelems), dimensions={}
+        input_square_mean = f32[2,8] multiply(input_square_sum, r_nelems_bcast)
+        epsilon = f32[] constant(0.001)
+        epsilon_bcast = f32[2,8] broadcast(epsilon), dimensions={}
+        input_squre_mean_plus_epsilon = f32[2,8] add(input_square_mean, epsilon_bcast)
+        norm_factor = f32[2,8] rsqrt(input_squre_mean_plus_epsilon)
+        norm_factor_bcast = f32[2,32,6,8] broadcast(norm_factor), dimensions={0,3}
+        norm = f32[2,32,6,8] multiply(norm_factor_bcast, input)
+        scale = f32[32,6] parameter(1)
+        scale_bcast = f32[2,32,6,8] broadcast(scale), dimensions={1,2}
+        ROOT out = f32[2,32,6,8] multiply(norm, scale_bcast)
+    })";
+
+  const char* optimized_hlo = R"(
+
+; CHECK-LABEL: ENTRY %test ({{.*}}: f32[2,32,6,8], {{.*}}: f32[32,6]) -> f32[2,32,6,8] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = f32[2,32,6,8]{3,2,1,0} parameter(0)
+; CHECK-NEXT:    [[TRANSPOSE:%[^ ]+]] = f32[2,8,32,6]{3,2,1,0} transpose([[P0]]), dimensions={0,3,1,2}
+; CHECK-NEXT:    [[P0_BITCAST:%[^ ]+]] = f32[16,32,6,1]{3,2,1,0} bitcast([[TRANSPOSE]])
+; CHECK-NEXT:    [[P1:%[^ ]+]] = f32[32,6]{1,0} parameter(1)
+; CHECK-NEXT:    [[P1_BITCAST:%[^ ]+]] = f32[32,6,1,1]{3,2,1,0} bitcast([[P1]])
+; CHECK-NEXT:    [[CC:%[^ ]+]] = (f32[16,32,6,1]{3,2,1,0}, u8[{{.*}}]{0}) custom-call([[P0_BITCAST]], [[P1_BITCAST]]),
+; CHECK:           custom_call_target="__cudnn$norm",
+; CHECK:           backend_config={
+; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"RMS_FWD_INFER"
+; CHECK:           }
+; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[16,32,6,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
+; CHECK-NEXT:  ROOT [[FUSION:%[^ ]+]] = f32[2,32,6,8]{3,2,1,0} fusion([[GTE]]), kind=kLoop, calls=[[FUSED_COMPUTATION:%[^ ]+]]
+  )";
+
+  TestNorm(hlo_text, optimized_hlo);
+}
+
+TEST_F(CudnnNormRewriterTest, RMSNorm4D12Degenerate2) {
+#if (CUDA_VERSION < 12000 || CUDNN_VERSION < 8905)
+  GTEST_SKIP() << "RMS norm kernels require CUDA 12 and cuDNN 8.9.5.";
+#endif
+  if (!(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::AMPERE) &&
+      !(GetCudaComputeCapability().major ==
+        se::CudaComputeCapability::HOPPER)) {
+    GTEST_SKIP() << "RMS norm kernels require Ampere or Hopper architectures.";
+  }
+  const char* hlo_text = R"(
+    HloModule test
+
+    apply {
+      a = f32[] parameter(0)
+      b = f32[] parameter(1)
+      ROOT c = f32[] add(a,b)
+    }
+
+    ENTRY test {
+        input = f32[2,32,1,8] parameter(0)
+        input_square = f32[2,32,1,8] multiply(input, input)
+        c0 = f32[] constant(0)
+        input_square_sum = f32[2,8] reduce(input_square, c0), dimensions={1,2}, to_apply=apply
+        r_nelems = f32[] constant(0.03125)
+        r_nelems_bcast = f32[2,8] broadcast(r_nelems), dimensions={}
+        input_square_mean = f32[2,8] multiply(input_square_sum, r_nelems_bcast)
+        epsilon = f32[] constant(0.001)
+        epsilon_bcast = f32[2,8] broadcast(epsilon), dimensions={}
+        input_squre_mean_plus_epsilon = f32[2,8] add(input_square_mean, epsilon_bcast)
+        norm_factor = f32[2,8] rsqrt(input_squre_mean_plus_epsilon)
+        norm_factor_bcast = f32[2,32,1,8] broadcast(norm_factor), dimensions={0,3}
+        norm = f32[2,32,1,8] multiply(norm_factor_bcast, input)
+        scale = f32[32,1] parameter(1)
+        scale_bcast = f32[2,32,1,8] broadcast(scale), dimensions={1,2}
+        ROOT out = f32[2,32,1,8] multiply(norm, scale_bcast)
+    })";
+
+  const char* optimized_hlo = R"(
+
+; CHECK-LABEL: ENTRY %test ({{.*}}: f32[2,32,1,8], {{.*}}: f32[32,1]) -> f32[2,32,1,8] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = f32[2,32,1,8]{3,2,1,0} parameter(0)
+; CHECK-NEXT:    [[TRANSPOSE:%[^ ]+]] = f32[1,2,8,32]{3,2,1,0} transpose([[P0]]), dimensions={2,0,3,1}
+; CHECK-NEXT:    [[P0_BITCAST:%[^ ]+]] = f32[16,32,1,1]{3,2,1,0} bitcast([[TRANSPOSE]])
+; CHECK-NEXT:    [[P1:%[^ ]+]] = f32[32,1]{1,0} parameter(1)
+; CHECK-NEXT:    [[P1_BITCAST:%[^ ]+]] = f32[32,1,1,1]{3,2,1,0} bitcast([[P1]])
+; CHECK-NEXT:    [[CC:%[^ ]+]] = (f32[16,32,1,1]{3,2,1,0}, u8[{{.*}}]{0}) custom-call([[P0_BITCAST]], [[P1_BITCAST]]),
+; CHECK:           custom_call_target="__cudnn$norm",
+; CHECK:           backend_config={
+; CHECK-DAG:         "epsilon":0.001
+; CHECK-DAG:         "kind":"RMS_FWD_INFER"
+; CHECK:           }
+; CHECK-NEXT:    [[GTE:%[^ ]+]] = f32[16,32,1,1]{3,2,1,0} get-tuple-element([[CC]]), index=0
+; CHECK-NEXT:  ROOT [[FUSION:%[^ ]+]] = f32[2,32,1,8]{3,2,1,0} fusion([[GTE]]), kind=kLoop, calls=[[FUSED_COMPUTATION:%[^ ]+]]
   )";
 
   TestNorm(hlo_text, optimized_hlo);

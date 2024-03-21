@@ -49,19 +49,20 @@ absl::Status RunGpuNorm(const gpu::GpuNormConfig& config,
   TF_ASSIGN_OR_RETURN(se::dnn::NormKind kind,
                       GetDNNNormKindFromCudnnNormKind(config.kind));
 
-  se::dnn::NormOp::Config ln_config{kind,
-                                    config.epsilon,
-                                    config.x_descriptor,
-                                    config.scale_descriptor,
-                                    config.y_or_dx_descriptor,
-                                    config.bias_descriptor,
-                                    config.dy_descriptor,
-                                    config.expectation_descriptor,
-                                    config.norm_factor_descriptor,
-                                    config.dscale_descriptor,
-                                    config.dbias_descriptor};
+  se::dnn::NormOp::Config norm_config{kind,
+                                      config.epsilon,
+                                      config.x_descriptor,
+                                      config.scale_descriptor,
+                                      config.y_or_dx_descriptor,
+                                      config.bias_descriptor,
+                                      config.dy_descriptor,
+                                      config.expectation_descriptor,
+                                      config.norm_factor_descriptor,
+                                      config.dscale_descriptor,
+                                      config.dbias_descriptor};
+
   TF_ASSIGN_OR_RETURN(auto* runner,
-                      lazy_runner->GetOrCreateRunner(ln_config, stream));
+                      lazy_runner->GetOrCreateRunner(norm_config, stream));
 
   std::vector<se::DeviceMemoryBase> operands;
   operands.emplace_back(x_buffer);

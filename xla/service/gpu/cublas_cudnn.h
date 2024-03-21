@@ -56,6 +56,7 @@ enum class CudnnNormKind {
   kLayerForwardInfer,
   kLayerForwardTrain,
   kLayerBackward,
+  kRMSForwardInfer,
 };
 
 enum class CudnnfMHAKind {

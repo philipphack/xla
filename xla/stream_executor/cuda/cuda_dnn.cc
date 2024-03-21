@@ -8998,14 +8998,12 @@ CudnnSupport::NormRunnerFromDesc(
                         CUDNN_TENSOR_REORDERING_NONE,
                         /*is_value=*/true));
 
-  cudnnBackendNormMode_t normalizationMode = CUDNN_LAYER_NORM;
-
   std::optional<cudnn_frontend::Operation> norm_op;
   switch (kind) {
     case dnn::LAYER_FWD_INFER:
       norm_op = cudnn_frontend::OperationBuilder(
                     CUDNN_BACKEND_OPERATION_NORM_FORWARD_DESCRIPTOR)
-                    .setNormalizationMode(normalizationMode)
+                    .setNormalizationMode(CUDNN_LAYER_NORM)
                     .setNormFwdPhase(CUDNN_NORM_FWD_INFERENCE)
                     .setxDesc(x_tensor)
                     .setScaleAndBias(scale_tensor, bias_tensor.value())
@@ -9016,7 +9014,7 @@ CudnnSupport::NormRunnerFromDesc(
     case dnn::LAYER_FWD_TRAIN:
       norm_op = cudnn_frontend::OperationBuilder(
                     CUDNN_BACKEND_OPERATION_NORM_FORWARD_DESCRIPTOR)
-                    .setNormalizationMode(normalizationMode)
+                    .setNormalizationMode(CUDNN_LAYER_NORM)
                     .setNormFwdPhase(CUDNN_NORM_FWD_TRAINING)
                     .setxDesc(x_tensor)
                     .setScaleAndBias(scale_tensor, bias_tensor.value())
@@ -9030,15 +9028,27 @@ CudnnSupport::NormRunnerFromDesc(
       norm_op =
           cudnn_frontend::OperationBuilder(
               CUDNN_BACKEND_OPERATION_NORM_BACKWARD_DESCRIPTOR)
-              .setNormalizationMode(normalizationMode)
+              .setNormalizationMode(CUDNN_LAYER_NORM)
               .setxDesc(x_tensor)
               .setScale(scale_tensor)
+              .setEpsilonTensor(epsilon_tensor)
               .setSavedMeanAndInvVar(expectation_tensor.value(),
                                      norm_factor_tensor.value())
               .setDScaleAndDBias(dscale_tensor.value(), dbias_tensor.value())
               .setdyDesc(dy_tensor.value())
               .setdxDesc(y_or_dx_tensor)
               .build();
+      break;
+    case dnn::RMS_FWD_INFER:
+      norm_op = cudnn_frontend::OperationBuilder(
+                    CUDNN_BACKEND_OPERATION_NORM_FORWARD_DESCRIPTOR)
+                    .setNormalizationMode(CUDNN_RMS_NORM)
+                    .setNormFwdPhase(CUDNN_NORM_FWD_INFERENCE)
+                    .setxDesc(x_tensor)
+                    .setScale(scale_tensor)
+                    .setEpsilonTensor(epsilon_tensor)
+                    .setyDesc(y_or_dx_tensor)
+                    .build();
       break;
     default:
       break;

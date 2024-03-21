@@ -361,7 +361,7 @@ std::vector<int64_t> MapDimensions(const Shape& original_shape,
     }
   }
 
-  // Map the dimensions numbers to the reshaped shape.
+  // Map the dimension numbers to the reshaped shape.
   std::vector<int64_t> mapped_dimensions;
   for (int64_t dimension : dimensions) {
     auto mapped_dimension = dimensions_map.find(dimension);
@@ -611,6 +611,18 @@ auto Expectation(UniqueHloInstruction* expectation, HloInstruction** reduce,
                                   shared_subpattern);
 }
 
+// Expected value, or mean, with optional broadcast.
+template <typename Pattern>
+auto Expectation(HloInstruction** reduce, Pattern pattern) {
+  auto shared_subpattern = MultiplyAnyOrder(m::Broadcast(m::ConstantScalar()),
+                                            AddReduce(reduce, pattern))
+                               .WithPredicate([](const HloInstruction* instr) {
+                                 return CalculatesExpectation(instr);
+                               });
+  return m::AnyOf<HloInstruction>(m::Broadcast(shared_subpattern),
+                                  shared_subpattern);
+}
+
 // Variance, expressed as expectation(X^2) - expectation(X)^2 or
 // expectation((X - expectation(X))^2).
 auto Variance(UniqueHloInstruction* variance, UniqueHloInstruction* expectation,
@@ -639,6 +651,19 @@ auto NormFactor(HloInstruction** norm_factor, UniqueHloInstruction* x,
                 UniqueHloInstruction* epsilon) {
   auto shared_subpattern = m::SharedSubpattern(Rsqrt(
       norm_factor, AddAnyOrder(Variance(variance, expectation, x),
+                               m::Broadcast(m::ConstantScalar().WithPredicate(
+                                   epsilon->capture_or_verify)))));
+  return m::AnyOf<HloInstruction>(m::Broadcast(shared_subpattern),
+                                  shared_subpattern);
+}
+
+// Reciprocal of the square root of the expectation of X^2 + epsilon with
+// optional broadcast.
+auto NormFactorRMS(HloInstruction** norm_factor, UniqueHloInstruction* x,
+                   HloInstruction** reduce, UniqueHloInstruction* epsilon) {
+  auto shared_subpattern = m::SharedSubpattern(Rsqrt(
+      norm_factor, AddAnyOrder(Expectation(reduce, Square(m::Op().WithPredicate(
+                                                       x->capture_or_verify))),
                                m::Broadcast(m::ConstantScalar().WithPredicate(
                                    epsilon->capture_or_verify)))));
   return m::AnyOf<HloInstruction>(m::Broadcast(shared_subpattern),
@@ -880,6 +905,212 @@ class CudnnNormRewriterVisitor : public DfsHloRewriteVisitor {
 
   absl::Status HandleSubtract(HloInstruction* instr) override {
     return MatchLayerNorm(instr);
+  }
+
+  absl::Status HandleMultiply(HloInstruction* instr) override {
+    return MatchRMSNorm(instr);
+  }
+
+  absl::Status MatchRMSNorm(HloInstruction* instr) {
+    UniqueHloInstruction x, epsilon;
+    HloInstruction *broadcast_scale, *scale, *norm_factor, *x0, *reduce;
+    if (Match(instr, MultiplyMultiplyAnyOrder(
+                         m::Op(&x0),
+                         NormFactorRMS(&norm_factor, &x, &reduce, &epsilon),
+                         m::Broadcast(&broadcast_scale, m::Op(&scale))))) {
+#if CUDNN_VERSION < 8905
+      // RMS norm kernels are available with cuDNN 8.9.5 and above.
+      VLOG(1) << "RMS norm Custom Calls require cuDNN 8.9.5.";
+      return absl::OkStatus();
+#endif  // CUDNN_VERSION < 8905
+
+      if (!instr->GetModule()
+               ->config()
+               .debug_options()
+               .xla_gpu_enable_cudnn_rms_norm()) {
+        VLOG(1) << "RMS norm Custom Calls disabled.";
+        return absl::OkStatus();
+      }
+
+      // RMS norm kernels require Ampere or Hopper architectures.
+      if (cuda_compute_capability_.major != se::CudaComputeCapability::AMPERE &&
+          cuda_compute_capability_.major != se::CudaComputeCapability::HOPPER) {
+        VLOG(1) << "RMS norm Custom Calls require Ampere or Hopper "
+                   "architectures.";
+        return absl::OkStatus();
+      }
+
+      // Verify the uniqueness of the inputs.
+      if (!x.Instr() || !epsilon.Instr() || x.Instr() != x0) {
+        VLOG(1) << "RMS norm operands not unique.";
+        return absl::OkStatus();
+      }
+
+      // Verify the input and output layouts.
+      // TODO(philipphack): Consider supporting more general cases.
+      if (!LayoutUtil::IsMonotonicWithDim0Major(x.Instr()->shape().layout()) ||
+          !LayoutUtil::IsMonotonicWithDim0Major(scale->shape().layout()) ||
+          !LayoutUtil::IsMonotonicWithDim0Major(instr->shape().layout())) {
+        VLOG(1) << "RMS norm input and/or output layouts nor supported.";
+        return absl::OkStatus();
+      }
+
+      // Verify the element types. The types and shapes of the scale and bias
+      // must match.
+      if (!CompatibleElementType(x.Instr()) || !CompatibleElementType(instr) ||
+          !CompatibleElementType(scale)) {
+        VLOG(1) << "RMS norm input types or shapes not supported.";
+        return absl::OkStatus();
+      }
+
+      // Verify that the shape of the scale is compatible with the operation.
+      std::vector<int64_t> norm_dims(reduce->dimensions().begin(),
+                                     reduce->dimensions().end());
+      std::vector<int64_t> norm_dims_adjusted = AdjustedDimensions(reduce);
+      if (norm_dims_adjusted.size() !=
+          ShapeUtil::DropDegenerateDimensions(scale->shape())
+              .dimensions_size()) {
+        VLOG(1) << "RMS norm input dimensions not supported.";
+        return absl::OkStatus();
+      }
+      for (int i = 0; i < norm_dims.size(); ++i) {
+        if (x.Instr()->shape().dimensions(norm_dims[i]) !=
+            scale->shape().dimensions(i)) {
+          VLOG(1) << "RMS norm input dimensions not supported.";
+          return absl::OkStatus();
+        }
+      }
+
+      // Verify the broadcasts of scale and bias.
+      if (!ShapeUtil::EqualIgnoringElementType(
+              ShapeUtil::DropDegenerateDimensions(reduce->operand(0)->shape()),
+              ShapeUtil::DropDegenerateDimensions(broadcast_scale->shape())) ||
+          norm_dims_adjusted != AdjustedDimensions(broadcast_scale)) {
+        VLOG(1) << "RMS norm operand broadcast not supported.";
+        return absl::OkStatus();
+      }
+
+      // If necessary, transpose the input so that the dimensions not being
+      // normalized are the leading dimensions.
+      std::vector<int64_t> non_norm_dims;
+      for (int64_t x_dim = 0; x_dim < x.Instr()->shape().rank(); ++x_dim) {
+        if (std::find(norm_dims.begin(), norm_dims.end(), x_dim) ==
+            norm_dims.end()) {
+          non_norm_dims.emplace_back(x_dim);
+        }
+      }
+      std::vector<int64_t> non_norm_dims_adjusted =
+          AdjustedDimensions(x.Instr()->shape(), non_norm_dims);
+
+      std::vector<int64_t> x_transpose_order = non_norm_dims;
+      x_transpose_order.insert(x_transpose_order.end(), norm_dims.begin(),
+                               norm_dims.end());
+
+      bool apply_transpose = false;
+      for (int i = 0; i < x_transpose_order.size(); ++i) {
+        if (x_transpose_order[i] != i) {
+          apply_transpose = true;
+          break;
+        }
+      }
+
+      std::optional<HloInstruction*> x_transpose;
+      // The transpose applied to the output is the inverse of the transpose
+      // applied to the input.
+      std::vector<int64_t> y_transpose_order(x_transpose_order.size());
+      if (apply_transpose) {
+        for (int k = 0; k < x_transpose_order.size(); ++k) {
+          y_transpose_order[x_transpose_order[k]] = k;
+        }
+        TF_ASSIGN_OR_RETURN(x_transpose,
+                            MakeTransposeHlo(x.Instr(), x_transpose_order));
+      }
+
+      // Combine the dimensions not normalized into the first dimension of the
+      // input as required by cuDNN.
+      std::vector<int64_t> reshaped_dims = {1};
+      for (auto non_norm_dim : non_norm_dims) {
+        reshaped_dims[0] *= x.Instr()->shape().dimensions(non_norm_dim);
+      }
+      for (auto norm_dim : norm_dims) {
+        reshaped_dims.emplace_back(x.Instr()->shape().dimensions(norm_dim));
+      }
+      // cuDNN requires tensors to have at least four dimensions.
+      while (reshaped_dims.size() < 4) {
+        reshaped_dims.emplace_back(1);
+      }
+
+      Shape reshaped_shape = ShapeUtil::MakeShape(
+          x.Instr()->shape().element_type(), reshaped_dims);
+      TF_ASSIGN_OR_RETURN(
+          HloInstruction * x_reshape,
+          MakeReshapeHlo(reshaped_shape, x_transpose.value_or(x.Instr())));
+
+      // Reshape the scale.
+      std::vector<int64_t> reshaped_scale_dims(reshaped_dims.begin() + 1,
+                                               reshaped_dims.end());
+      // cuDNN requires tensors to have at least four dimensions.
+      while (reshaped_scale_dims.size() < 4) {
+        reshaped_scale_dims.emplace_back(1);
+      }
+      Shape scale_shape = ShapeUtil::MakeShape(scale->shape().element_type(),
+                                               reshaped_scale_dims);
+      TF_ASSIGN_OR_RETURN(HloInstruction * scale_reshape,
+                          MakeReshapeHlo(scale_shape, scale));
+      GpuBackendConfig gpu_backend_config;
+      CudnnNormBackendConfig& backend_config =
+          *gpu_backend_config.mutable_cudnn_norm_backend_config();
+      backend_config.set_epsilon(
+          epsilon.Instr()->literal().GetAsDouble({}).value());
+      backend_config.set_kind(CudnnNormBackendConfig::RMS_FWD_INFER);
+      auto* algorithm = backend_config.mutable_algorithm();
+      algorithm->set_algo_id(0);
+      algorithm->set_math_type(se::dnn::AlgorithmProto::TENSOR_OP_MATH);
+      algorithm->set_is_cudnn_frontend(true);
+
+      // Set the workspace size to its upper bound.
+      // TODO(philipphack): Consider autotuning the norm kernels.
+      TF_ASSIGN_OR_RETURN(const int64_t c_constant,
+                          CConstant(cuda_compute_capability_));
+      const int64_t workspace_size = (2 * c_constant * (4 + 256)) +
+                                     (2 * reshaped_dims[0] * 4) + 64 + 10000;
+      algorithm->mutable_workspace_size()->set_value(workspace_size);
+
+      // The output of the Custom Call is a tuple, the second element of which
+      // describes the scratch space.
+      Shape custom_call_shape = ShapeUtil::MakeTupleShape(
+          {x_reshape->shape(), ShapeUtil::MakeShape(U8, {workspace_size})});
+
+      HloInstruction* custom_call =
+          instr->AddInstruction(HloInstruction::CreateCustomCall(
+              custom_call_shape, {x_reshape, scale_reshape},
+              kCudnnNormCallTarget));
+      TF_RETURN_IF_ERROR(custom_call->set_backend_config(gpu_backend_config));
+
+      TF_ASSIGN_OR_RETURN(HloInstruction * gte,
+                          MakeGetTupleElementHlo(custom_call, 0));
+      TF_ASSIGN_OR_RETURN(
+          HloInstruction * y_reshape,
+          MakeReshapeHlo(x_transpose.value_or(instr)->shape(), gte));
+
+      std::optional<HloInstruction*> y_transpose;
+      if (apply_transpose) {
+        TF_ASSIGN_OR_RETURN(y_transpose,
+                            MakeTransposeHlo(y_reshape, y_transpose_order));
+      }
+      TF_RETURN_IF_ERROR(
+          ReplaceInstruction(instr, y_transpose.value_or(y_reshape)));
+
+      // Store metadata for potential use in the backward graph.
+      norm_metadata_.insert(
+          {custom_call,
+           NormMetadata({x_transpose.value_or(nullptr),
+                         y_transpose.value_or(nullptr), norm_dims_adjusted,
+                         non_norm_dims_adjusted})});
+
+      VLOG(1) << "RMS norm rewritten into Custom Call.";
+    }
+    return absl::OkStatus();
   }
 
   // Matches and rewrites layer norm patterns,
