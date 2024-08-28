@@ -73,8 +73,20 @@ absl::StatusOr<bool> ShiftDequantizationF8(HloComputation* while_body) {
   // while loop.
   HloInstruction* param_tuple = while_instr->mutable_operand(0);
   std::array<HloInstruction*, 2> binaries, operands, scales;
+  std::array<std::vector<HloInstruction*>, 2> unaries;
   for (int k = 0; k < 2; ++k) {
-    if (!Match(param_tuple->mutable_operand(k),
+    HloInstruction* operand = param_tuple->mutable_operand(k);
+    // Capture bitcast, broadcast, copy, reshape and transpose ops between
+    // dequantization and the loop.
+    while (operand->opcode() == HloOpcode::kBitcast ||
+           operand->opcode() == HloOpcode::kBroadcast ||
+           operand->opcode() == HloOpcode::kCopy ||
+           operand->opcode() == HloOpcode::kReshape ||
+           operand->opcode() == HloOpcode::kTranspose) {
+      unaries[k].emplace_back(operand);
+      operand = operand->mutable_operand(0);
+    }
+    if (!Match(operand,
                m::AnyOf<HloInstruction>(
                    m::Divide(&binaries[k], m::Convert(m::Op(&operands[k])),
                              m::Broadcast(m::Op(&scales[k]))),
@@ -154,6 +166,23 @@ absl::StatusOr<bool> ShiftDequantizationF8(HloComputation* while_body) {
   } else {
     VLOG(5) << "Unable to identify valid windowed einsum pattern.";
     return false;
+  }
+
+  // Replace the dequantized bitcast, broadcast, copy, reshape and transpose ops
+  // (if any) with FP8 unary ops.
+  for (int k = 0; k < 2; ++k) {
+    std::reverse(unaries[k].begin(), unaries[k].end());
+    for (HloInstruction* unary : unaries[k]) {
+      Shape new_shape = ShapeUtil::MakeShapeWithDenseLayout(
+          operands[k]->shape().element_type(), unary->shape().dimensions(),
+          unary->shape().layout().minor_to_major());
+
+      operands[k] = unary->AddInstruction(unary->CloneWithNewOperands(
+          ShapeUtil::MakeShapeWithDenseLayout(
+              operands[k]->shape().element_type(), unary->shape().dimensions(),
+              unary->shape().layout().minor_to_major()),
+          {operands[k]}));
+    }
   }
 
   // Replace the dequantized dot operands in the parameter tuple used by while
