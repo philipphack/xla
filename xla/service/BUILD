@@ -604,6 +604,7 @@ cc_library(
     hdrs = ["collective_quantizer.h"],
     deps = [
         ":hlo_pass",
+        ":hlo_replication_analysis",
         ":pattern_matcher",
         "//xla:shape_util",
         "//xla/hlo/ir:hlo",
