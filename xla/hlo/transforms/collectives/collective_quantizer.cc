@@ -38,6 +38,44 @@ namespace {
 
 namespace m = match;
 
+// Maintains a cache of HloReplicationAnalysis for a given HLoModule.
+class ReplicationAnalysisCache {
+ public:
+  // Returns whether instr is replicated across replica_groups. When
+  // replica_groups is empty, returns whether instr is replicated across all
+  // partitions associated with module. Returns false when there are multiple
+  // replicas.
+  absl::StatusOr<bool> InstrIsReplicated(
+      HloModule* module, HloInstruction* instr,
+      absl::Span<const ReplicaGroup> replica_groups) {
+    // The replication analysis only verifies the replication of instr across
+    // partitions, not replicas. The replica count must be one to ensure instr
+    // is replicated across all devices.
+    if (module->config().replica_count() > 1) {
+      return false;
+    }
+
+    if (!replication_analysis_cache_) {
+      TF_ASSIGN_OR_RETURN(
+          std::unique_ptr<HloReplicationAnalysis> replication_analysis,
+          HloReplicationAnalysis::RunWithPartialReplication(
+              module,
+              /*cross_partition_spmd=*/true));
+      replication_analysis_cache_.emplace(std::move(*replication_analysis));
+      module_ = module;
+    } else if (module_ != module) {
+      return Internal("Unexpected HloModule");
+    }
+
+    return replication_analysis_cache_->HloInstructionIsReplicatedAt(
+        instr, {}, replica_groups);
+  }
+
+ private:
+  std::optional<HloReplicationAnalysis> replication_analysis_cache_;
+  HloModule* module_ = nullptr;
+};
+
 // Holds the ops of a subgraph describing quantization (conversion to a narrower
 // type after scaling by a broadcasted scalar and clamping), dequantization
 // (scaling by a broadcasted scalar after type conversion to a wider type) or
@@ -125,28 +163,6 @@ HloInstruction* ApplyUnaries(HloInstruction* instr,
         {instr}));
   }
   return instr;
-}
-
-// Returns whether instr is replicated across replica_groups. When
-// replica_groups is empty, returns whether instr is replicated across all
-// partitions associated with module. Returns false when there are multiple
-// replicas.
-absl::StatusOr<bool> InstrIsReplicated(
-    HloModule* module, HloInstruction* instr,
-    absl::Span<const ReplicaGroup> replica_groups) {
-  // The replication analysis only verifies the replication of instr across
-  // partitions, not replicas. The replica count must be one to ensure instr is
-  // replicated across all devices.
-  if (module->config().replica_count() > 1) {
-    return false;
-  }
-
-  TF_ASSIGN_OR_RETURN(auto replication_analysis,
-                      HloReplicationAnalysis::RunWithPartialReplication(
-                          module,
-                          /*cross_partition_spmd=*/true));
-  return replication_analysis->HloInstructionIsReplicatedAt(instr, {},
-                                                            replica_groups);
 }
 
 // Recursively collects and returns unary, divide, or multiply operands of instr
@@ -300,7 +316,8 @@ std::optional<ConversionSubgraph> IsSupportedQuantization(
   return std::make_optional<ConversionSubgraph>(std::move(subgraph));
 }
 
-absl::StatusOr<bool> MatchDequantization(HloInstruction* instr) {
+absl::StatusOr<bool> MatchDequantization(
+    HloInstruction* instr, ReplicationAnalysisCache* replication_analysis) {
   VLOG(5) << "Attempting to identify dequantization or conversion to wider "
              "type preceding collective "
           << instr->ToShortString();
@@ -322,12 +339,12 @@ absl::StatusOr<bool> MatchDequantization(HloInstruction* instr) {
         group_mode != CollectiveOpGroupMode::kFlattenedID) {
       return false;
     }
-    TF_ASSIGN_OR_RETURN(
-        bool scale_is_replicated,
-        InstrIsReplicated(instr->parent()->parent(), subgraph->scale_bcast,
-                          instr->opcode() == HloOpcode::kCollectivePermute
-                              ? absl::Span<const ReplicaGroup>{}
-                              : instr->replica_groups()));
+    TF_ASSIGN_OR_RETURN(bool scale_is_replicated,
+                        replication_analysis->InstrIsReplicated(
+                            instr->parent()->parent(), subgraph->scale_bcast,
+                            instr->opcode() == HloOpcode::kCollectivePermute
+                                ? absl::Span<const ReplicaGroup>{}
+                                : instr->replica_groups()));
     if (!scale_is_replicated) {
       return false;
     }
@@ -367,7 +384,8 @@ absl::StatusOr<bool> MatchDequantization(HloInstruction* instr) {
   return true;
 }
 
-absl::StatusOr<bool> MatchQuantization(HloInstruction* instr) {
+absl::StatusOr<bool> MatchQuantization(
+    HloInstruction* instr, ReplicationAnalysisCache* replication_analysis) {
   VLOG(5) << "Attempting to identify quantization or conversion to narrower "
              "type following collective "
           << instr->ToShortString();
@@ -391,12 +409,12 @@ absl::StatusOr<bool> MatchQuantization(HloInstruction* instr) {
         group_mode != CollectiveOpGroupMode::kFlattenedID) {
       return false;
     }
-    TF_ASSIGN_OR_RETURN(
-        bool scale_is_replicated,
-        InstrIsReplicated(instr->parent()->parent(), subgraph->scale_bcast,
-                          instr->opcode() == HloOpcode::kCollectivePermute
-                              ? absl::Span<const ReplicaGroup>{}
-                              : instr->replica_groups()));
+    TF_ASSIGN_OR_RETURN(bool scale_is_replicated,
+                        replication_analysis->InstrIsReplicated(
+                            instr->parent()->parent(), subgraph->scale_bcast,
+                            instr->opcode() == HloOpcode::kCollectivePermute
+                                ? absl::Span<const ReplicaGroup>{}
+                                : instr->replica_groups()));
     if (!scale_is_replicated) {
       return false;
     }
@@ -446,13 +464,16 @@ absl::StatusOr<bool> CollectiveQuantizer::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   bool changed = false;
+  ReplicationAnalysisCache replication_analysis;
 
   for (HloComputation* comp : module->MakeComputationPostOrder()) {
     for (HloInstruction* instr : comp->MakeInstructionPostOrder()) {
       if (IsSupportedCollective(instr)) {
-        TF_ASSIGN_OR_RETURN(bool instr_changed, MatchDequantization(instr));
+        TF_ASSIGN_OR_RETURN(bool instr_changed,
+                            MatchDequantization(instr, &replication_analysis));
         if (!instr_changed) {
-          TF_ASSIGN_OR_RETURN(instr_changed, MatchQuantization(instr));
+          TF_ASSIGN_OR_RETURN(instr_changed,
+                              MatchQuantization(instr, &replication_analysis));
         }
         changed |= instr_changed;
       }
